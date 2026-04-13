@@ -6,7 +6,7 @@ Telegram bot (RemindKar) — personal AI memory and commitment tracker. Users se
 ## Stack
 - **Runtime:** Supabase Edge Functions (Deno/TypeScript)
 - **AI:** Gemini 2.5 Flash for NLU parsing, text-embedding-004 for vector embeddings (NOT 2.0 — deprecated)
-- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`)
+- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `archived_users`, `archived_memories`, `archived_user_sessions`)
 - **Cron:** pg_cron + pg_net (digest at 3:30 UTC, reminders every 5 min)
 - **Bot API:** Telegram Bot API via webhooks (NOT polling)
 
@@ -28,6 +28,8 @@ supabase/
     002_cron_jobs.sql           # pg_cron schedules
     003_pgvector_sessions.sql   # pgvector extension, embeddings column, match_memories RPC, user_sessions table
     004_conversation_history.sql # conversation_history column on user_sessions
+    005_conversation_logs.sql    # conversation_logs table for observability
+    006_audit_tables.sql         # Archive tables + BEFORE DELETE triggers for buildathon data retention
 ```
 
 ## Supported Intents
@@ -75,6 +77,10 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - send-reminders: looks up user timezone via `getUser` (cached per-invocation) and passes to `formatReminder`/`formatPreReminder`.
 - Onboarding digest time: computed from user's selected timezone + pg_cron schedule (3:30 UTC), not hardcoded "9 AM".
 - Forward handler saves conversation history (prefixed with `[forwarded]`).
+- Conversation logging: `conversation_logs` table captures every interaction (user message, Gemini parsed intents JSON, primary intent, bot action summary, processing time ms, errors, user timezone). `logInteraction` wrapper in index.ts never crashes the main flow. Indexed by telegram_id, intent, errors, and time.
+- Date-filtered queries run BEFORE pending pattern matching in `handleQuery` — prevents "my tasks for today" from returning all pending items.
+- Pre-reminders (`getDuePreReminders`) check `due_date` in a 25-35 min window, NOT `reminder_at` — ensures "Heads up in 30 min" is accurate.
+- Audit archive tables: BEFORE DELETE triggers on `users`, `memories`, `user_sessions` auto-copy data to `archived_*` tables. `pg_trigger_depth()` distinguishes CASCADE (`account_cascade`) from direct deletes (`direct`). No app code changes — purely database-level. Preserves evidence of user activity for buildathon demos.
 
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

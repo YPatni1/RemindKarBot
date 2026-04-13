@@ -3,6 +3,14 @@ import { TelegramInlineKeyboardButton } from "./types.ts";
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
 
+// Escape HTML special characters in user-generated content
+export function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
 export async function sendMessage(chatId: number, text: string): Promise<void> {
   const res = await fetch(`${TELEGRAM_API}/sendMessage`, {
     method: "POST",
@@ -10,7 +18,7 @@ export async function sendMessage(chatId: number, text: string): Promise<void> {
     body: JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
     }),
   });
   if (!res.ok) {
@@ -30,7 +38,7 @@ export async function sendMessageWithButtons(
     body: JSON.stringify({
       chat_id: chatId,
       text,
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
       reply_markup: { inline_keyboard: buttons },
     }),
   });
@@ -52,12 +60,35 @@ export async function editMessageText(
       chat_id: chatId,
       message_id: messageId,
       text,
-      parse_mode: "Markdown",
+      parse_mode: "HTML",
     }),
   });
   if (!res.ok) {
     const err = await res.text();
     console.error(`editMessageText failed: ${res.status} ${err}`);
+  }
+}
+
+export async function editMessageWithButtons(
+  chatId: number,
+  messageId: number,
+  text: string,
+  buttons: TelegramInlineKeyboardButton[][],
+): Promise<void> {
+  const res = await fetch(`${TELEGRAM_API}/editMessageText`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      chat_id: chatId,
+      message_id: messageId,
+      text,
+      parse_mode: "HTML",
+      reply_markup: { inline_keyboard: buttons },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error(`editMessageWithButtons failed: ${res.status} ${err}`);
   }
 }
 

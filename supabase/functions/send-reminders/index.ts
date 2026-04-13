@@ -1,4 +1,4 @@
-import { getDueReminders, getDuePreReminders, updateMemory } from "../_shared/database.ts";
+import { getDueReminders, getDuePreReminders, updateMemory, getUser } from "../_shared/database.ts";
 import { sendMessageWithButtons } from "../_shared/telegram.ts";
 import { formatReminder, formatPreReminder } from "../_shared/formatters.ts";
 
@@ -11,13 +11,24 @@ Deno.serve(async (req) => {
 
     console.log("send-reminders: starting check...");
 
+    // Cache user timezone lookups to avoid repeated DB calls
+    const tzCache: Record<number, string> = {};
+    async function getUserTz(telegramId: number): Promise<string> {
+      if (tzCache[telegramId]) return tzCache[telegramId];
+      const user = await getUser(telegramId);
+      const tz = user?.timezone || "Asia/Kolkata";
+      tzCache[telegramId] = tz;
+      return tz;
+    }
+
     // 1. Send pre-reminders (30 min before)
     const preReminders = await getDuePreReminders();
     console.log(`send-reminders: ${preReminders.length} pre-reminders due`);
 
     for (const memory of preReminders) {
       try {
-        const { text, buttons } = formatPreReminder(memory);
+        const tz = await getUserTz(memory.telegram_id);
+        const { text, buttons } = formatPreReminder(memory, tz);
         await sendMessageWithButtons(memory.telegram_id, text, buttons);
         await updateMemory(memory.id, { is_pre_reminded: true });
       } catch (err) {
@@ -31,7 +42,8 @@ Deno.serve(async (req) => {
 
     for (const memory of reminders) {
       try {
-        const { text, buttons } = formatReminder(memory);
+        const tz = await getUserTz(memory.telegram_id);
+        const { text, buttons } = formatReminder(memory, tz);
         await sendMessageWithButtons(memory.telegram_id, text, buttons);
         await updateMemory(memory.id, { is_reminded: true });
       } catch (err) {

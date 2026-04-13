@@ -56,7 +56,7 @@ export interface TelegramInlineKeyboardButton {
 // ============================================================
 
 export interface GeminiParsedResponse {
-  intent: "task" | "reminder" | "event" | "birthday" | "note" | "query" | "greeting" | "done" | "unknown";
+  intent: "task" | "reminder" | "event" | "birthday" | "note" | "query" | "greeting" | "done" | "reschedule" | "delete" | "edit" | "status" | "casual" | "unknown";
   description: string;
   due_date: string | null;
   reminder_at: string | null;
@@ -68,9 +68,15 @@ export interface GeminiParsedResponse {
   recurrence: "daily" | "weekly" | "yearly" | null;
   priority: "high" | "medium" | "low";
   query_text: string | null;
+  reschedule_to: string | null;
+  target_index: number | null;
+  edit_field: "type" | "description" | "due_date" | null;
+  edit_value: string | null;
   confidence: number;
   ambiguous_date: boolean;
   date_options: string[];
+  query_date_start: string | null;
+  query_date_end: string | null;
 }
 
 // ============================================================
@@ -107,4 +113,13 @@ export interface DbMemory {
   source: string;
   created_at: string;
   completed_at: string | null;
+}
+
+// ============================================================
+// Conversation history (stored in user_sessions)
+// ============================================================
+
+export interface ConversationMessage {
+  role: "user" | "bot";
+  text: string;
 }

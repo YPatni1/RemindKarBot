@@ -18,8 +18,9 @@ Deno.serve(async (req) => {
 
     for (const user of users) {
       try {
-        const { overdue, today, tomorrow, somedayCount } = await getDigestMemories(user.telegram_id);
-        const digestText = formatDigest(user.first_name, overdue, today, tomorrow, somedayCount);
+        const tz = user.timezone || "Asia/Kolkata";
+        const { overdue, today, tomorrow, somedayCount } = await getDigestMemories(user.telegram_id, tz);
+        const digestText = formatDigest(user.first_name, overdue, today, tomorrow, somedayCount, tz);
 
         // Skip users with nothing pending
         if (!digestText) continue;

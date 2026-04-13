@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { DbUser, DbMemory } from "./types.ts";
+import { DbUser, DbMemory, ConversationMessage } from "./types.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -77,6 +77,17 @@ export async function updateUserConsent(
   if (error) throw error;
 }
 
+export async function updateUserTimezone(
+  telegramId: number,
+  timezone: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from("users")
+    .update({ timezone })
+    .eq("telegram_id", telegramId);
+  if (error) throw error;
+}
+
 export async function deleteUserData(telegramId: number): Promise<void> {
   // on delete cascade handles memories
   const { error } = await supabase
@@ -84,6 +95,20 @@ export async function deleteUserData(telegramId: number): Promise<void> {
     .delete()
     .eq("telegram_id", telegramId);
   if (error) throw error;
+}
+
+// Delete only memories + sessions, keep user account intact
+export async function deleteAllMemories(telegramId: number): Promise<void> {
+  const { error: memErr } = await supabase
+    .from("memories")
+    .delete()
+    .eq("telegram_id", telegramId);
+  if (memErr) throw memErr;
+  const { error: sesErr } = await supabase
+    .from("user_sessions")
+    .delete()
+    .eq("telegram_id", telegramId);
+  if (sesErr) throw sesErr;
 }
 
 export async function getActiveConsentedUsers(): Promise<DbUser[]> {
@@ -109,14 +134,25 @@ export async function createMemory(memory: {
   entities?: Record<string, unknown>;
   recurrence?: string | null;
   source?: string;
+  description_embedding?: number[] | null;
 }): Promise<DbMemory> {
-  const { data, error } = await supabase
+  const { description_embedding, ...rest } = memory;
+  const insertData: Record<string, unknown> = { ...rest };
+  if (description_embedding) {
+    insertData.description_embedding = `[${description_embedding.join(",")}]`;
+  }
+  let result = await supabase
     .from("memories")
-    .insert(memory)
+    .insert(insertData)
     .select()
     .single();
-  if (error) throw error;
-  return data as DbMemory;
+  // If insert fails (e.g. embedding column missing), retry without embedding
+  if (result.error && description_embedding) {
+    console.error("createMemory with embedding failed, retrying without:", result.error.message);
+    result = await supabase.from("memories").insert(rest).select().single();
+  }
+  if (result.error) throw result.error;
+  return result.data as DbMemory;
 }
 
 export async function updateMemory(
@@ -138,6 +174,35 @@ export async function deleteMemory(memoryId: string): Promise<void> {
   if (error) throw error;
 }
 
+export async function getMemoryById(memoryId: string): Promise<DbMemory | null> {
+  const { data, error } = await supabase
+    .from("memories")
+    .select("*")
+    .eq("id", memoryId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DbMemory | null;
+}
+
+// Semantic search using pgvector cosine similarity
+export async function semanticSearch(
+  telegramId: number,
+  embedding: number[],
+  statusFilter: string | null = null,
+  threshold = 0.4,
+  limit = 10,
+): Promise<DbMemory[]> {
+  const { data, error } = await supabase.rpc("match_memories", {
+    query_telegram_id: telegramId,
+    query_embedding: `[${embedding.join(",")}]`,
+    match_threshold: threshold,
+    match_count: limit,
+    status_filter: statusFilter,
+  });
+  if (error) throw error;
+  return (data ?? []) as DbMemory[];
+}
+
 export async function getPendingMemories(telegramId: number): Promise<DbMemory[]> {
   const { data, error } = await supabase
     .from("memories")
@@ -149,6 +214,11 @@ export async function getPendingMemories(telegramId: number): Promise<DbMemory[]
   return (data ?? []) as DbMemory[];
 }
 
+// Escape ILIKE wildcards in user input
+function escapeIlike(text: string): string {
+  return text.replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
 export async function searchMemories(
   telegramId: number,
   queryText: string,
@@ -157,7 +227,7 @@ export async function searchMemories(
     .from("memories")
     .select("*")
     .eq("telegram_id", telegramId)
-    .ilike("description", `%${queryText}%`)
+    .ilike("description", `%${escapeIlike(queryText)}%`)
     .order("created_at", { ascending: false })
     .limit(10);
   if (error) throw error;
@@ -174,9 +244,43 @@ export async function searchPendingByDescription(
     .select("*")
     .eq("telegram_id", telegramId)
     .eq("status", "pending")
-    .ilike("description", `%${searchText}%`);
+    .ilike("description", `%${escapeIlike(searchText)}%`);
   if (error) throw error;
   return (data ?? []) as DbMemory[];
+}
+
+// Query memories within a date range (for "this week", "today", "last Tuesday" queries)
+export async function getMemoriesByDateRange(
+  telegramId: number,
+  dateStart: string,
+  dateEnd: string,
+  filterField: "due_date" | "created_at" = "due_date",
+): Promise<DbMemory[]> {
+  const { data, error } = await supabase
+    .from("memories")
+    .select("*")
+    .eq("telegram_id", telegramId)
+    .gte(filterField, dateStart)
+    .lte(filterField, dateEnd)
+    .order(filterField, { ascending: true })
+    .limit(20);
+  if (error) throw error;
+  return (data ?? []) as DbMemory[];
+}
+
+// Count completed memories since a given date (for status/progress)
+export async function getCompletedSince(
+  telegramId: number,
+  since: string,
+): Promise<number> {
+  const { count, error } = await supabase
+    .from("memories")
+    .select("*", { count: "exact", head: true })
+    .eq("telegram_id", telegramId)
+    .eq("status", "done")
+    .gte("completed_at", since);
+  if (error) throw error;
+  return count ?? 0;
 }
 
 // For send-reminders: get memories where reminder is due
@@ -206,14 +310,28 @@ export async function getDuePreReminders(): Promise<DbMemory[]> {
   return (data ?? []) as DbMemory[];
 }
 
+// Timezone offset map (hours from UTC)
+const TZ_OFFSETS: Record<string, number> = {
+  "Asia/Kolkata": 5.5,
+  "America/New_York": -5,
+  "America/Chicago": -6,
+  "America/Denver": -7,
+  "America/Los_Angeles": -8,
+  "Europe/London": 0,
+  "Europe/Berlin": 1,
+  "Asia/Dubai": 4,
+  "Asia/Singapore": 8,
+  "Asia/Tokyo": 9,
+  "Australia/Sydney": 11,
+};
+
 // For send-digest: get pending memories grouped by due date category
-export async function getDigestMemories(telegramId: number): Promise<{
+export async function getDigestMemories(telegramId: number, timezone = "Asia/Kolkata"): Promise<{
   overdue: DbMemory[];
   today: DbMemory[];
   tomorrow: DbMemory[];
   somedayCount: number;
 }> {
-  // All pending memories for this user
   const { data, error } = await supabase
     .from("memories")
     .select("*")
@@ -224,22 +342,22 @@ export async function getDigestMemories(telegramId: number): Promise<{
 
   const memories = (data ?? []) as DbMemory[];
 
-  // Calculate IST boundaries
+  // Calculate day boundaries in user's timezone
   const nowUtc = new Date();
-  const istOffset = 5.5 * 60 * 60 * 1000;
-  const nowIst = new Date(nowUtc.getTime() + istOffset);
+  const offsetMs = (TZ_OFFSETS[timezone] ?? 5.5) * 60 * 60 * 1000;
+  const nowLocal = new Date(nowUtc.getTime() + offsetMs);
 
-  const todayStart = new Date(nowIst);
-  todayStart.setHours(0, 0, 0, 0);
-  const todayStartUtc = new Date(todayStart.getTime() - istOffset);
+  const todayStart = new Date(nowLocal);
+  todayStart.setUTCHours(0, 0, 0, 0);
+  const todayStartUtc = new Date(todayStart.getTime() - offsetMs);
 
   const tomorrowStart = new Date(todayStart);
-  tomorrowStart.setDate(tomorrowStart.getDate() + 1);
-  const tomorrowStartUtc = new Date(tomorrowStart.getTime() - istOffset);
+  tomorrowStart.setUTCDate(tomorrowStart.getUTCDate() + 1);
+  const tomorrowStartUtc = new Date(tomorrowStart.getTime() - offsetMs);
 
   const dayAfterStart = new Date(tomorrowStart);
-  dayAfterStart.setDate(dayAfterStart.getDate() + 1);
-  const dayAfterStartUtc = new Date(dayAfterStart.getTime() - istOffset);
+  dayAfterStart.setUTCDate(dayAfterStart.getUTCDate() + 1);
+  const dayAfterStartUtc = new Date(dayAfterStart.getTime() - offsetMs);
 
   const overdue: DbMemory[] = [];
   const today: DbMemory[] = [];
@@ -263,4 +381,51 @@ export async function getDigestMemories(telegramId: number): Promise<{
   }
 
   return { overdue, today, tomorrow, somedayCount };
+}
+
+// ---- Sessions ----
+
+export async function upsertSession(
+  telegramId: number,
+  shownIds: string[],
+  intent: string,
+  conversationHistory?: ConversationMessage[],
+): Promise<void> {
+  const upsertData: Record<string, unknown> = {
+    telegram_id: telegramId,
+    last_shown_ids: shownIds,
+    last_intent: intent,
+    updated_at: new Date().toISOString(),
+  };
+  if (conversationHistory !== undefined) {
+    upsertData.conversation_history = conversationHistory;
+  }
+  const { error } = await supabase
+    .from("user_sessions")
+    .upsert(upsertData);
+  if (error) throw error;
+}
+
+export async function getSession(
+  telegramId: number,
+): Promise<{
+  last_shown_ids: string[];
+  last_intent: string;
+  conversation_history: ConversationMessage[];
+} | null> {
+  const { data, error } = await supabase
+    .from("user_sessions")
+    .select("last_shown_ids, last_intent, conversation_history, updated_at")
+    .eq("telegram_id", telegramId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return null;
+  // TTL: 30 minutes
+  const age = Date.now() - new Date(data.updated_at).getTime();
+  if (age > 30 * 60 * 1000) return null;
+  return {
+    last_shown_ids: data.last_shown_ids,
+    last_intent: data.last_intent,
+    conversation_history: (data.conversation_history ?? []) as ConversationMessage[],
+  };
 }

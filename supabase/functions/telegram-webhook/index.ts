@@ -27,6 +27,7 @@ import {
   semanticSearch,
   upsertSession,
   getSession,
+  createConversationLog,
 } from "../_shared/database.ts";
 import { parseMessage, transcribeAudio, generateEmbedding } from "../_shared/gemini.ts";
 import {
@@ -117,35 +118,114 @@ Deno.serve(async (req) => {
 });
 
 // ============================================================
+// Conversation log helper — never crashes the main flow
+// ============================================================
+
+async function logInteraction(log: {
+  telegram_id: number;
+  user_message: string | null;
+  message_type: string;
+  parsed_intents?: unknown | null;
+  primary_intent?: string | null;
+  bot_action?: string | null;
+  processing_time_ms: number;
+  error?: string | null;
+  user_timezone?: string;
+}): Promise<void> {
+  try {
+    await createConversationLog({
+      telegram_id: log.telegram_id,
+      user_message: log.user_message,
+      message_type: log.message_type,
+      parsed_intents: log.parsed_intents ?? null,
+      primary_intent: log.primary_intent ?? null,
+      bot_action: log.bot_action ?? null,
+      processing_time_ms: log.processing_time_ms,
+      error: log.error ?? null,
+      user_timezone: log.user_timezone ?? "Asia/Kolkata",
+    });
+  } catch (err) {
+    console.error("logInteraction failed (non-fatal):", err);
+  }
+}
+
+// ============================================================
 // Update router (order matters — see spec section 6)
 // ============================================================
 
 async function handleUpdate(update: TelegramUpdate): Promise<void> {
+  const startMs = Date.now();
+
   if (update.callback_query) {
-    await handleCallbackQuery(update.callback_query);
+    const telegramId = update.callback_query.from.id;
+    const cbData = update.callback_query.data ?? "";
+    try {
+      await handleCallbackQuery(update.callback_query);
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: cbData,
+        message_type: "callback",
+        bot_action: `callback:${cbData.split(":")[0]}`,
+        processing_time_ms: Date.now() - startMs,
+      });
+    } catch (err) {
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: cbData,
+        message_type: "callback",
+        error: String(err),
+        processing_time_ms: Date.now() - startMs,
+      });
+      throw err;
+    }
     return;
   }
 
   const message = update.message;
   if (!message) return;
 
+  const telegramId = message.from?.id ?? 0;
+  const userText = message.text ?? "";
+
   if (message.voice) {
-    await handleVoice(message);
+    // Logging handled inside handleVoice
+    await handleVoice(message, startMs);
     return;
   }
 
   if (message.forward_date || message.forward_origin) {
-    await handleForward(message);
+    // Logging handled inside handleForward
+    await handleForward(message, startMs);
     return;
   }
 
-  if (message.text?.startsWith("/")) {
-    await handleCommand(message);
+  if (userText.startsWith("/")) {
+    try {
+      await handleCommand(message);
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: userText,
+        message_type: "command",
+        primary_intent: userText.split(" ")[0].split("@")[0],
+        bot_action: `command:${userText.split(" ")[0]}`,
+        processing_time_ms: Date.now() - startMs,
+      });
+    } catch (err) {
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: userText,
+        message_type: "command",
+        error: String(err),
+        processing_time_ms: Date.now() - startMs,
+      });
+      throw err;
+    }
     return;
   }
 
   if (message.text) {
-    await handleText(message);
+    // Logging handled inside handleText
+    await handleText(message, startMs);
     return;
   }
 
@@ -155,6 +235,13 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
     chatId,
     "I can only process text and voice messages for now. Try typing or sending a voice note!",
   );
+  await logInteraction({
+    telegram_id: telegramId,
+    user_message: null,
+    message_type: "unsupported",
+    bot_action: "unsupported_input",
+    processing_time_ms: Date.now() - startMs,
+  });
 }
 
 // ============================================================
@@ -674,7 +761,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 // Text message handler
 // ============================================================
 
-async function handleText(message: TelegramMessage): Promise<void> {
+async function handleText(message: TelegramMessage, startMs = Date.now()): Promise<void> {
   const chatId = message.chat.id;
   const telegramId = message.from!.id;
   const text = message.text!;
@@ -697,6 +784,15 @@ async function handleText(message: TelegramMessage): Promise<void> {
       if (dateResult) {
         const newHistory = appendHistory(history, text, dateResult);
         await saveSession(telegramId, [memoryId], "date_set", newHistory);
+        await logInteraction({
+          telegram_id: telegramId,
+          user_message: text,
+          message_type: "text",
+          primary_intent: "date_followup",
+          bot_action: dateResult,
+          processing_time_ms: Date.now() - startMs,
+          user_timezone: user.timezone,
+        });
         return;
       }
       // Not a date response — fall through to normal processing
@@ -725,9 +821,28 @@ async function handleText(message: TelegramMessage): Promise<void> {
       lastIntent,
       newHistory,
     );
+
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: text,
+      message_type: "text",
+      parsed_intents: parsedItems,
+      primary_intent: lastParsed?.intent ?? null,
+      bot_action: botSummaries.join("; "),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user.timezone,
+    });
   } catch (error) {
     console.error("Text handler error:", error);
     await sendMessage(chatId, "I couldn't process that, please try again in a moment.");
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: text,
+      message_type: "text",
+      error: String(error),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user?.timezone ?? "Asia/Kolkata",
+    });
   }
 }
 
@@ -793,7 +908,7 @@ async function tryApplyDate(
 // Voice message handler
 // ============================================================
 
-async function handleVoice(message: TelegramMessage): Promise<void> {
+async function handleVoice(message: TelegramMessage, startMs = Date.now()): Promise<void> {
   const chatId = message.chat.id;
   const telegramId = message.from!.id;
 
@@ -843,9 +958,28 @@ async function handleVoice(message: TelegramMessage): Promise<void> {
       lastIntent,
       newHistory,
     );
+
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: `[voice] ${transcription}`,
+      message_type: "voice",
+      parsed_intents: parsedItems,
+      primary_intent: lastParsed?.intent ?? null,
+      bot_action: botSummaries.join("; "),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user.timezone,
+    });
   } catch (error) {
     console.error("Voice handler error:", error);
     await sendMessage(chatId, "Something went wrong while saving. Please try again.");
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: null,
+      message_type: "voice",
+      error: String(error),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user?.timezone ?? "Asia/Kolkata",
+    });
   }
 }
 
@@ -853,7 +987,7 @@ async function handleVoice(message: TelegramMessage): Promise<void> {
 // Forward handler
 // ============================================================
 
-async function handleForward(message: TelegramMessage): Promise<void> {
+async function handleForward(message: TelegramMessage, startMs = Date.now()): Promise<void> {
   const chatId = message.chat.id;
   const telegramId = message.from!.id;
 
@@ -887,9 +1021,28 @@ async function handleForward(message: TelegramMessage): Promise<void> {
       parsedItems[parsedItems.length - 1]?.intent ?? "forwarded",
       newHistory,
     );
+
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: `[forwarded] ${text}`,
+      message_type: "forward",
+      parsed_intents: parsedItems,
+      primary_intent: parsedItems[parsedItems.length - 1]?.intent ?? null,
+      bot_action: botSummaries.join("; "),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user.timezone,
+    });
   } catch (error) {
     console.error("Forward handler error:", error);
     await sendMessage(chatId, "I couldn't process that forwarded message, please try again.");
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: `[forwarded] ${text}`,
+      message_type: "forward",
+      error: String(error),
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user?.timezone ?? "Asia/Kolkata",
+    });
   }
 }
 

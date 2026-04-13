@@ -410,6 +410,25 @@ export async function upsertSession(
   if (error) throw error;
 }
 
+// ---- Conversation Logs ----
+
+export async function createConversationLog(log: {
+  telegram_id: number;
+  user_message: string | null;
+  message_type: string;
+  parsed_intents: unknown | null;
+  primary_intent: string | null;
+  bot_action: string | null;
+  processing_time_ms: number;
+  error: string | null;
+  user_timezone: string;
+}): Promise<void> {
+  const { error } = await supabase.from("conversation_logs").insert(log);
+  if (error) console.error("Failed to write conversation log:", error);
+}
+
+// ---- Sessions ----
+
 export async function getSession(
   telegramId: number,
 ): Promise<{

@@ -299,13 +299,17 @@ export async function getDueReminders(): Promise<DbMemory[]> {
 // For send-reminders: get memories where pre-reminder (30 min before) is due
 export async function getDuePreReminders(): Promise<DbMemory[]> {
   const now = new Date();
+  // Fire pre-reminder when due_date is 25-35 min away (not based on reminder_at)
+  const min25 = new Date(now.getTime() + 25 * 60 * 1000).toISOString();
+  const min35 = new Date(now.getTime() + 35 * 60 * 1000).toISOString();
   const { data, error } = await supabase
     .from("memories")
     .select("*")
     .eq("status", "pending")
     .eq("is_pre_reminded", false)
-    .gt("reminder_at", now.toISOString()) // reminder hasn't fired yet
-    .lte("reminder_at", new Date(now.getTime() + 30 * 60 * 1000).toISOString()); // but within 30 min
+    .not("due_date", "is", null)
+    .gte("due_date", min25)
+    .lte("due_date", min35);
   if (error) throw error;
   return (data ?? []) as DbMemory[];
 }

@@ -1042,20 +1042,9 @@ async function handleQuery(
 ): Promise<void> {
   const lowerQuery = queryText.toLowerCase();
   const lowerRaw = rawInput.toLowerCase();
-  const pendingPatterns = ["pending", "all tasks", "my tasks", "show tasks", "list tasks", "what do i have"];
-  if (pendingPatterns.some((p) => lowerQuery.includes(p) || lowerRaw.includes(p))) {
-    const memories = await getPendingMemories(telegramId);
-    await saveSession(telegramId, memories.map((m) => m.id), "pending");
-    const { text: pendingText, buttons: pendingButtons } = formatPendingList(memories, tz);
-    if (pendingButtons.length > 0) {
-      await sendMessageWithButtons(chatId, pendingText, pendingButtons);
-    } else {
-      await sendMessage(chatId, pendingText);
-    }
-    return;
-  }
 
-  // Date-filtered query: "this week", "today", "what did I add last Tuesday"
+  // Date-filtered query FIRST: "today", "this week", "what did I add last Tuesday"
+  // Must run before pending patterns — "my tasks for today" matches both
   if (dateStart && dateEnd) {
     // Detect if user is asking about creation date vs due date
     const creationPatterns = ["added", "created", "saved", "told you", "sent"];
@@ -1068,6 +1057,19 @@ async function handleQuery(
     }
     // Use rawInput for display so user sees their original question, not Gemini's extracted term
     await sendMessage(chatId, formatQueryResults(results, rawInput || queryText, tz));
+    return;
+  }
+
+  const pendingPatterns = ["pending", "all tasks", "my tasks", "show tasks", "list tasks", "what do i have"];
+  if (pendingPatterns.some((p) => lowerQuery.includes(p) || lowerRaw.includes(p))) {
+    const memories = await getPendingMemories(telegramId);
+    await saveSession(telegramId, memories.map((m) => m.id), "pending");
+    const { text: pendingText, buttons: pendingButtons } = formatPendingList(memories, tz);
+    if (pendingButtons.length > 0) {
+      await sendMessageWithButtons(chatId, pendingText, pendingButtons);
+    } else {
+      await sendMessage(chatId, pendingText);
+    }
     return;
   }
 

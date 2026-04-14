@@ -394,6 +394,7 @@ export async function upsertSession(
   shownIds: string[],
   intent: string,
   conversationHistory?: ConversationMessage[],
+  sessionId?: string,
 ): Promise<void> {
   const upsertData: Record<string, unknown> = {
     telegram_id: telegramId,
@@ -403,6 +404,9 @@ export async function upsertSession(
   };
   if (conversationHistory !== undefined) {
     upsertData.conversation_history = conversationHistory;
+  }
+  if (sessionId !== undefined) {
+    upsertData.session_id = sessionId;
   }
   const { error } = await supabase
     .from("user_sessions")
@@ -419,6 +423,8 @@ export async function createConversationLog(log: {
   parsed_intents: unknown | null;
   primary_intent: string | null;
   bot_action: string | null;
+  bot_response: string | null;
+  session_id: string | null;
   processing_time_ms: number;
   error: string | null;
   user_timezone: string;
@@ -435,10 +441,11 @@ export async function getSession(
   last_shown_ids: string[];
   last_intent: string;
   conversation_history: ConversationMessage[];
+  session_id: string;
 } | null> {
   const { data, error } = await supabase
     .from("user_sessions")
-    .select("last_shown_ids, last_intent, conversation_history, updated_at")
+    .select("last_shown_ids, last_intent, conversation_history, updated_at, session_id")
     .eq("telegram_id", telegramId)
     .maybeSingle();
   if (error) throw error;
@@ -450,5 +457,6 @@ export async function getSession(
     last_shown_ids: data.last_shown_ids,
     last_intent: data.last_intent,
     conversation_history: (data.conversation_history ?? []) as ConversationMessage[],
+    session_id: data.session_id,
   };
 }

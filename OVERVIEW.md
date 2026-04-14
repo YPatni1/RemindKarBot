@@ -194,7 +194,33 @@ ILIKE fallback (text search)
 | last_shown_ids | uuid[] | IDs from last list shown (enables "delete 2") |
 | last_intent | text | e.g. `awaiting_date` for progressive clarification |
 | conversation_history | jsonb | Last 3 user+bot pairs for Gemini context |
+| session_id | uuid | Auto-generated on insert, reused within TTL, links to conversation_logs |
 | updated_at | timestamptz | 30-min TTL logic applied in app |
+
+### `conversation_logs`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| telegram_id | bigint | |
+| user_message | text | Raw input (prefixed `[voice]`/`[forwarded]` for those types) |
+| message_type | text | text / voice / command / callback / forward / unsupported |
+| parsed_intents | jsonb | Gemini parsed response array (text/voice/forward only) |
+| primary_intent | text | Main intent extracted (populated for ALL message types incl. callbacks) |
+| bot_action | text | Brief summary of what the bot did |
+| bot_response | text | Actual message text sent to user (text/voice/forward only) |
+| session_id | uuid | Links to user_sessions.session_id for conversation grouping |
+| processing_time_ms | integer | End-to-end request processing time |
+| error | text | Error string if interaction failed |
+| user_timezone | text | User's timezone at time of interaction |
+| created_at | timestamptz | |
+
+### Audit Archive Tables
+| Table | Mirrors | Trigger | Notes |
+|---|---|---|---|
+| `archived_users` | users | `trg_archive_user` (BEFORE DELETE) | `deletion_type = 'account_delete'` |
+| `archived_memories` | memories | `trg_archive_memory` (BEFORE DELETE) | `account_cascade` vs `direct` via `pg_trigger_depth()` |
+| `archived_user_sessions` | user_sessions | `trg_archive_session` (BEFORE DELETE) | Same depth logic |
+| `archived_conversation_logs` | conversation_logs | `trg_archive_logs_on_user_delete` (BEFORE DELETE on users) | Archives + deletes logs for the deleted user's telegram_id |
 
 ---
 
@@ -223,6 +249,9 @@ ILIKE fallback (text search)
 | **Resilience order** | Save memory → generate embedding → save session. Embedding/session failures never block memory storage |
 | **Consent gate** | All non-command messages blocked until user accepts via /start |
 | **Unsupported inputs** | Photos, stickers, docs → helpful "I can only handle text/voice" message |
+| **Conversation logging** | Every interaction logged with user message, parsed intents, bot response text, session_id, processing time. Never crashes main flow |
+| **Session grouping** | `session_id` links related interactions; persists in `user_sessions` within 30-min TTL, regenerated on expiry |
+| **Audit archive** | BEFORE DELETE triggers on users/memories/sessions/conversation_logs auto-archive data. Full cascade tracking via `deletion_type` |
 
 ---
 

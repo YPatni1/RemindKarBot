@@ -46,9 +46,10 @@ async function saveSession(
   ids: string[],
   intent: string,
   conversationHistory?: ConversationMessage[],
+  sessionId?: string,
 ): Promise<void> {
   try {
-    await upsertSession(telegramId, ids, intent, conversationHistory);
+    await upsertSession(telegramId, ids, intent, conversationHistory, sessionId);
   } catch (err) {
     console.error("Session save failed (non-fatal):", err);
   }
@@ -128,6 +129,8 @@ async function logInteraction(log: {
   parsed_intents?: unknown | null;
   primary_intent?: string | null;
   bot_action?: string | null;
+  bot_response?: string | null;
+  session_id?: string | null;
   processing_time_ms: number;
   error?: string | null;
   user_timezone?: string;
@@ -140,6 +143,8 @@ async function logInteraction(log: {
       parsed_intents: log.parsed_intents ?? null,
       primary_intent: log.primary_intent ?? null,
       bot_action: log.bot_action ?? null,
+      bot_response: log.bot_response ?? null,
+      session_id: log.session_id ?? null,
       processing_time_ms: log.processing_time_ms,
       error: log.error ?? null,
       user_timezone: log.user_timezone ?? "Asia/Kolkata",
@@ -165,6 +170,7 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
         telegram_id: telegramId,
         user_message: cbData,
         message_type: "callback",
+        primary_intent: cbData.split(":")[0],
         bot_action: `callback:${cbData.split(":")[0]}`,
         processing_time_ms: Date.now() - startMs,
       });
@@ -173,6 +179,7 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
         telegram_id: telegramId,
         user_message: cbData,
         message_type: "callback",
+        primary_intent: cbData.split(":")[0],
         error: String(err),
         processing_time_ms: Date.now() - startMs,
       });
@@ -774,6 +781,7 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
 
   // Get conversation history for context
   const session = await getSession(telegramId);
+  const sessionId = session?.session_id ?? crypto.randomUUID();
   const history = session?.conversation_history ?? [];
 
   try {
@@ -783,13 +791,15 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
       const dateResult = await tryApplyDate(chatId, telegramId, memoryId, text, history, user.timezone);
       if (dateResult) {
         const newHistory = appendHistory(history, text, dateResult);
-        await saveSession(telegramId, [memoryId], "date_set", newHistory);
+        await saveSession(telegramId, [memoryId], "date_set", newHistory, sessionId);
         await logInteraction({
           telegram_id: telegramId,
           user_message: text,
           message_type: "text",
           primary_intent: "date_followup",
           bot_action: dateResult,
+          bot_response: dateResult,
+          session_id: sessionId,
           processing_time_ms: Date.now() - startMs,
           user_timezone: user.timezone,
         });
@@ -800,10 +810,12 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
 
     const parsedItems = await parseMessage(text, history, user.timezone);
     const botSummaries: string[] = [];
+    const botResponses: string[] = [];
 
     for (const parsed of parsedItems) {
-      const summary = await routeParsedIntent(chatId, telegramId, user.id, text, parsed, "text", user.timezone);
+      const { summary, response } = await routeParsedIntent(chatId, telegramId, user.id, text, parsed, "text", user.timezone);
       botSummaries.push(summary);
+      botResponses.push(response);
     }
 
     // Update conversation history
@@ -820,6 +832,7 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
       currentSession?.last_shown_ids ?? [],
       lastIntent,
       newHistory,
+      sessionId,
     );
 
     await logInteraction({
@@ -829,6 +842,8 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
       parsed_intents: parsedItems,
       primary_intent: lastParsed?.intent ?? null,
       bot_action: botSummaries.join("; "),
+      bot_response: botResponses.join("\n---\n"),
+      session_id: sessionId,
       processing_time_ms: Date.now() - startMs,
       user_timezone: user.timezone,
     });
@@ -840,6 +855,7 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
       user_message: text,
       message_type: "text",
       error: String(error),
+      session_id: sessionId,
       processing_time_ms: Date.now() - startMs,
       user_timezone: user?.timezone ?? "Asia/Kolkata",
     });
@@ -919,6 +935,7 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
   }
 
   const session = await getSession(telegramId);
+  const sessionId = session?.session_id ?? crypto.randomUUID();
   const history = session?.conversation_history ?? [];
 
   try {
@@ -940,9 +957,11 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
     await sendMessage(chatId, `\u{1F399} "${escapeHtml(transcription)}"`);
 
     const botSummaries: string[] = [];
+    const botResponses: string[] = [];
     for (const parsed of parsedItems) {
-      const summary = await routeParsedIntent(chatId, telegramId, user.id, transcription, parsed, "voice", user.timezone);
+      const { summary, response } = await routeParsedIntent(chatId, telegramId, user.id, transcription, parsed, "voice", user.timezone);
       botSummaries.push(summary);
+      botResponses.push(response);
     }
 
     const newHistory = appendHistory(history, transcription, botSummaries.join("; "));
@@ -957,6 +976,7 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
       currentSession?.last_shown_ids ?? [],
       lastIntent,
       newHistory,
+      sessionId,
     );
 
     await logInteraction({
@@ -966,6 +986,8 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
       parsed_intents: parsedItems,
       primary_intent: lastParsed?.intent ?? null,
       bot_action: botSummaries.join("; "),
+      bot_response: botResponses.join("\n---\n"),
+      session_id: sessionId,
       processing_time_ms: Date.now() - startMs,
       user_timezone: user.timezone,
     });
@@ -977,6 +999,7 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
       user_message: null,
       message_type: "voice",
       error: String(error),
+      session_id: sessionId,
       processing_time_ms: Date.now() - startMs,
       user_timezone: user?.timezone ?? "Asia/Kolkata",
     });
@@ -1005,12 +1028,15 @@ async function handleForward(message: TelegramMessage, startMs = Date.now()): Pr
 
   try {
     const session = await getSession(telegramId);
+    const sessionId = session?.session_id ?? crypto.randomUUID();
     const history = session?.conversation_history ?? [];
     const parsedItems = await parseMessage(text, history, user.timezone);
     const botSummaries: string[] = [];
+    const botResponses: string[] = [];
     for (const parsed of parsedItems) {
-      const summary = await routeParsedIntent(chatId, telegramId, user.id, text, parsed, "forwarded", user.timezone);
+      const { summary, response } = await routeParsedIntent(chatId, telegramId, user.id, text, parsed, "forwarded", user.timezone);
       botSummaries.push(summary);
+      botResponses.push(response);
     }
 
     const newHistory = appendHistory(history, `[forwarded] ${text}`, botSummaries.join("; "));
@@ -1020,6 +1046,7 @@ async function handleForward(message: TelegramMessage, startMs = Date.now()): Pr
       currentSession?.last_shown_ids ?? [],
       parsedItems[parsedItems.length - 1]?.intent ?? "forwarded",
       newHistory,
+      sessionId,
     );
 
     await logInteraction({
@@ -1029,6 +1056,8 @@ async function handleForward(message: TelegramMessage, startMs = Date.now()): Pr
       parsed_intents: parsedItems,
       primary_intent: parsedItems[parsedItems.length - 1]?.intent ?? null,
       bot_action: botSummaries.join("; "),
+      bot_response: botResponses.join("\n---\n"),
+      session_id: sessionId,
       processing_time_ms: Date.now() - startMs,
       user_timezone: user.timezone,
     });
@@ -1059,18 +1088,18 @@ async function routeParsedIntent(
   parsed: GeminiParsedResponse,
   source: string,
   userTimezone = "Asia/Kolkata",
-): Promise<string> {
+): Promise<{ summary: string; response: string }> {
   switch (parsed.intent) {
-    case "greeting":
-      await sendMessage(
-        chatId,
-        "Hey! Send me a task, reminder, or question \u{2014} I'm ready to help.",
-      );
-      return "Greeted user";
+    case "greeting": {
+      const responseText = "Hey! Send me a task, reminder, or question \u{2014} I'm ready to help.";
+      await sendMessage(chatId, responseText);
+      return { summary: "Greeted user", response: responseText };
+    }
 
     case "casual": {
       // Casual/social messages — respond warmly, mention pending if relevant
       const pending = await getPendingMemories(telegramId);
+      let responseText: string;
       if (pending.length > 0) {
         const tzOffsetMs = (TZ_OFFSETS[userTimezone] ?? 5.5) * 60 * 60 * 1000;
         const nowUtc = new Date();
@@ -1085,57 +1114,61 @@ async function routeParsedIntent(
           return due >= nowUtc && due < tomorrowStartUtc;
         });
         if (dueToday.length > 0) {
-          await sendMessage(chatId, `\u{1F44B} You have ${dueToday.length} thing${dueToday.length > 1 ? "s" : ""} due today \u{2014} I'll remind you when it's time!`);
+          responseText = `\u{1F44B} You have ${dueToday.length} thing${dueToday.length > 1 ? "s" : ""} due today \u{2014} I'll remind you when it's time!`;
         } else {
-          await sendMessage(chatId, `\u{1F44B} You have ${pending.length} pending item${pending.length > 1 ? "s" : ""} \u{2014} I'll send your digest in the morning.`);
+          responseText = `\u{1F44B} You have ${pending.length} pending item${pending.length > 1 ? "s" : ""} \u{2014} I'll send your digest in the morning.`;
         }
       } else {
-        await sendMessage(chatId, "\u{1F44B} All clear! Text me when you need to remember something.");
+        responseText = "\u{1F44B} All clear! Text me when you need to remember something.";
       }
-      return "Casual response";
+      await sendMessage(chatId, responseText);
+      return { summary: "Casual response", response: responseText };
     }
 
-    case "query":
-      await handleQuery(chatId, telegramId, parsed.query_text || rawInput, rawInput, userTimezone, parsed.query_date_start ?? null, parsed.query_date_end ?? null);
-      return `Query: ${parsed.query_text || rawInput}`;
+    case "query": {
+      const responseText = await handleQuery(chatId, telegramId, parsed.query_text || rawInput, rawInput, userTimezone, parsed.query_date_start ?? null, parsed.query_date_end ?? null);
+      return { summary: `Query: ${parsed.query_text || rawInput}`, response: responseText };
+    }
 
-    case "done":
-      await handleDoneIntent(chatId, telegramId, parsed.description, parsed.target_index ?? null);
-      return `Done: ${parsed.description}`;
+    case "done": {
+      const responseText = await handleDoneIntent(chatId, telegramId, parsed.description, parsed.target_index ?? null);
+      return { summary: `Done: ${parsed.description}`, response: responseText };
+    }
 
-    case "reschedule":
-      await handleRescheduleIntent(chatId, telegramId, parsed.description, parsed.reschedule_to ?? null, parsed.target_index ?? null);
-      return `Reschedule: ${parsed.description}`;
+    case "reschedule": {
+      const responseText = await handleRescheduleIntent(chatId, telegramId, parsed.description, parsed.reschedule_to ?? null, parsed.target_index ?? null);
+      return { summary: `Reschedule: ${parsed.description}`, response: responseText };
+    }
 
-    case "delete":
+    case "delete": {
       // Safety gate: detect "delete everything/all" type requests
       if (isDeleteAllRequest(parsed.description)) {
-        await sendMessageWithButtons(chatId,
-          "\u{26A0}\u{FE0F} <b>Delete ALL your data?</b> This is permanent and cannot be undone.",
-          [[
-            { text: "\u{1F5D1} Yes, delete everything", callback_data: "confirm_delete_all" },
-            { text: "\u{274C} Cancel", callback_data: "cancel_delete_all" },
-          ]],
-        );
-        return "Delete all safety gate";
+        const safetyText = "\u{26A0}\u{FE0F} <b>Delete ALL your data?</b> This is permanent and cannot be undone.";
+        await sendMessageWithButtons(chatId, safetyText, [[
+          { text: "\u{1F5D1} Yes, delete everything", callback_data: "confirm_delete_all" },
+          { text: "\u{274C} Cancel", callback_data: "cancel_delete_all" },
+        ]]);
+        return { summary: "Delete all safety gate", response: safetyText };
       }
-      await handleDeleteIntent(chatId, telegramId, parsed.description, parsed.target_index ?? null);
-      return `Delete: ${parsed.description}`;
+      const responseText = await handleDeleteIntent(chatId, telegramId, parsed.description, parsed.target_index ?? null);
+      return { summary: `Delete: ${parsed.description}`, response: responseText };
+    }
 
-    case "edit":
-      await handleEditIntent(chatId, telegramId, parsed.description, parsed.edit_field ?? null, parsed.edit_value ?? null, parsed.target_index ?? null);
-      return `Edit: ${parsed.description}`;
+    case "edit": {
+      const responseText = await handleEditIntent(chatId, telegramId, parsed.description, parsed.edit_field ?? null, parsed.edit_value ?? null, parsed.target_index ?? null);
+      return { summary: `Edit: ${parsed.description}`, response: responseText };
+    }
 
-    case "status":
-      await handleStatusIntent(chatId, telegramId);
-      return "Status shown";
+    case "status": {
+      const responseText = await handleStatusIntent(chatId, telegramId);
+      return { summary: "Status shown", response: responseText };
+    }
 
-    case "unknown":
-      await sendMessage(
-        chatId,
-        "I'm not sure what to do with that. Try sending a task, reminder, or ask me about your saved items.\n\nExamples: \"Call mom tomorrow 5 PM\" or \"What do I have pending?\"",
-      );
-      return "Unknown intent";
+    case "unknown": {
+      const responseText = "I'm not sure what to do with that. Try sending a task, reminder, or ask me about your saved items.\n\nExamples: \"Call mom tomorrow 5 PM\" or \"What do I have pending?\"";
+      await sendMessage(chatId, responseText);
+      return { summary: "Unknown intent", response: responseText };
+    }
 
     default: {
       // Storage intents: task, reminder, event, birthday, note
@@ -1166,14 +1199,14 @@ async function routeParsedIntent(
       if (parsed.ambiguous_date && parsed.date_options.length > 1) {
         const { text, buttons } = formatAmbiguousDate(memory.id, parsed.date_options, userTimezone);
         await sendMessageWithButtons(chatId, text, buttons);
-        return `Saved ${parsed.intent}: ${parsed.description} (ambiguous date)`;
+        return { summary: `Saved ${parsed.intent}: ${parsed.description} (ambiguous date)`, response: text };
       }
 
       const { text, buttons } = formatConfirmation(memory, userTimezone);
       await sendMessageWithButtons(chatId, text, buttons);
 
       const dueSummary = memory.due_date ? ` due ${new Date(memory.due_date).toLocaleDateString()}` : " (no deadline)";
-      return `Saved ${parsed.intent}: ${parsed.description}${dueSummary}`;
+      return { summary: `Saved ${parsed.intent}: ${parsed.description}${dueSummary}`, response: text };
     }
   }
 }
@@ -1192,7 +1225,7 @@ async function handleQuery(
   tz = "Asia/Kolkata",
   dateStart: string | null = null,
   dateEnd: string | null = null,
-): Promise<void> {
+): Promise<string> {
   const lowerQuery = queryText.toLowerCase();
   const lowerRaw = rawInput.toLowerCase();
 
@@ -1209,8 +1242,9 @@ async function handleQuery(
       await saveSession(telegramId, results.map((m) => m.id), "query");
     }
     // Use rawInput for display so user sees their original question, not Gemini's extracted term
-    await sendMessage(chatId, formatQueryResults(results, rawInput || queryText, tz));
-    return;
+    const responseText = formatQueryResults(results, rawInput || queryText, tz);
+    await sendMessage(chatId, responseText);
+    return responseText;
   }
 
   const pendingPatterns = ["pending", "all tasks", "my tasks", "show tasks", "list tasks", "what do i have"];
@@ -1223,14 +1257,16 @@ async function handleQuery(
     } else {
       await sendMessage(chatId, pendingText);
     }
-    return;
+    return pendingText;
   }
 
   const results = await findMemories(telegramId, queryText);
   if (results.length > 0) {
     await saveSession(telegramId, results.map((m) => m.id), "query");
   }
-  await sendMessage(chatId, formatQueryResults(results, queryText, tz));
+  const responseText = formatQueryResults(results, queryText, tz);
+  await sendMessage(chatId, responseText);
+  return responseText;
 }
 
 // ============================================================
@@ -1286,16 +1322,18 @@ async function handleDoneIntent(
   telegramId: number,
   description: string,
   targetIndex: number | null = null,
-): Promise<void> {
+): Promise<string> {
   if (targetIndex) {
     const memory = await resolveByIndex(telegramId, targetIndex);
     if (!memory) {
-      await sendMessage(chatId, `No item #${targetIndex} in your list.`);
-      return;
+      const r = `No item #${targetIndex} in your list.`;
+      await sendMessage(chatId, r);
+      return r;
     }
     await updateMemory(memory.id, { status: "done", completed_at: new Date().toISOString() });
-    await sendMessage(chatId, `\u{2705} Done: ${escapeHtml(memory.description)}`);
-    return;
+    const r = `\u{2705} Done: ${escapeHtml(memory.description)}`;
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const matches = await findPendingByDescription(telegramId, description);
@@ -1303,26 +1341,31 @@ async function handleDoneIntent(
   if (matches.length === 0) {
     const allPending = await getPendingMemories(telegramId);
     if (allPending.length === 0) {
-      await sendMessage(chatId, "You have no pending tasks.");
+      const r = "You have no pending tasks.";
+      await sendMessage(chatId, r);
+      return r;
     } else {
       const shown = allPending.slice(0, 5);
       await saveSession(telegramId, shown.map((m) => m.id), "done_picker");
       const prompt = `Couldn't find "${escapeHtml(description)}". Which task did you complete?\n`;
       const { text, buttons } = formatDoneOptions(shown, prompt);
       await sendMessageWithButtons(chatId, text, buttons);
+      return text;
     }
-    return;
   } else if (matches.length === 1) {
     await updateMemory(matches[0].id, {
       status: "done",
       completed_at: new Date().toISOString(),
     });
-    await sendMessage(chatId, `\u{2705} Done: ${escapeHtml(matches[0].description)}`);
+    const r = `\u{2705} Done: ${escapeHtml(matches[0].description)}`;
+    await sendMessage(chatId, r);
+    return r;
   } else {
     const shown = matches.slice(0, 5);
     await saveSession(telegramId, shown.map((m) => m.id), "done_picker");
     const { text, buttons } = formatDoneOptions(shown);
     await sendMessageWithButtons(chatId, text, buttons);
+    return text;
   }
 }
 
@@ -1332,10 +1375,11 @@ async function handleRescheduleIntent(
   description: string,
   rescheduleTo: string | null,
   targetIndex: number | null = null,
-): Promise<void> {
+): Promise<string> {
   if (!rescheduleTo) {
-    await sendMessage(chatId, "When would you like to reschedule it to? (e.g. 'reschedule to Friday')");
-    return;
+    const r = "When would you like to reschedule it to? (e.g. 'reschedule to Friday')";
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const rscUser = await getUser(telegramId);
@@ -1349,8 +1393,9 @@ async function handleRescheduleIntent(
   if (targetIndex) {
     const memory = await resolveByIndex(telegramId, targetIndex);
     if (!memory) {
-      await sendMessage(chatId, `No item #${targetIndex} in your list.`);
-      return;
+      const r = `No item #${targetIndex} in your list.`;
+      await sendMessage(chatId, r);
+      return r;
     }
     await updateMemory(memory.id, {
       due_date: newDue, reminder_at: newReminder,
@@ -1359,16 +1404,18 @@ async function handleRescheduleIntent(
     const formatted = new Date(newDue).toLocaleString("en-IN", {
       weekday: "short", day: "numeric", month: "short", timeZone: tz,
     });
-    await sendMessage(chatId, `\u{1F4C5} Rescheduled: ${escapeHtml(memory.description)} \u{2192} ${formatted}`);
-    return;
+    const r = `\u{1F4C5} Rescheduled: ${escapeHtml(memory.description)} \u{2192} ${formatted}`;
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const matches = description ? await findPendingByDescription(telegramId, description) : [];
   const candidates = matches.length > 0 ? matches : await getPendingMemories(telegramId);
 
   if (candidates.length === 0) {
-    await sendMessage(chatId, "You have no pending tasks to reschedule.");
-    return;
+    const r = "You have no pending tasks to reschedule.";
+    await sendMessage(chatId, r);
+    return r;
   }
 
   if (matches.length === 1) {
@@ -1379,14 +1426,16 @@ async function handleRescheduleIntent(
     const formatted = new Date(newDue).toLocaleString("en-IN", {
       weekday: "short", day: "numeric", month: "short", timeZone: tz,
     });
-    await sendMessage(chatId, `\u{1F4C5} Rescheduled: ${escapeHtml(matches[0].description)} \u{2192} ${formatted}`);
-    return;
+    const r = `\u{1F4C5} Rescheduled: ${escapeHtml(matches[0].description)} \u{2192} ${formatted}`;
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const shown = candidates.slice(0, 5);
   await saveSession(telegramId, shown.map((m) => m.id), "reschedule_picker");
   const { text, buttons } = formatRescheduleOptions(shown, dateOnly);
   await sendMessageWithButtons(chatId, text, buttons);
+  return text;
 }
 
 async function handleDeleteIntent(
@@ -1394,36 +1443,37 @@ async function handleDeleteIntent(
   telegramId: number,
   description: string,
   targetIndex: number | null = null,
-): Promise<void> {
+): Promise<string> {
   if (targetIndex) {
     const memory = await resolveByIndex(telegramId, targetIndex);
     if (!memory) {
-      await sendMessage(chatId, `No item #${targetIndex} in your list.`);
-      return;
+      const r = `No item #${targetIndex} in your list.`;
+      await sendMessage(chatId, r);
+      return r;
     }
     await deleteMemory(memory.id);
-    await sendMessage(chatId, `\u{1F5D1} Deleted: ${escapeHtml(memory.description)}`);
-    return;
+    const r = `\u{1F5D1} Deleted: ${escapeHtml(memory.description)}`;
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const matches = description ? await findPendingByDescription(telegramId, description) : [];
 
   if (matches.length === 1) {
     // Single match — confirm before deleting
-    await sendMessageWithButtons(chatId,
-      `Delete this?\n\u{1F4CB} ${escapeHtml(matches[0].description)}`,
-      [[
-        { text: "\u{1F5D1} Yes, delete", callback_data: `delete:${matches[0].id}` },
-        { text: "\u{274C} No, keep it", callback_data: "cancel_delete" },
-      ]],
-    );
-    return;
+    const r = `Delete this?\n\u{1F4CB} ${escapeHtml(matches[0].description)}`;
+    await sendMessageWithButtons(chatId, r, [[
+      { text: "\u{1F5D1} Yes, delete", callback_data: `delete:${matches[0].id}` },
+      { text: "\u{274C} No, keep it", callback_data: "cancel_delete" },
+    ]]);
+    return r;
   }
 
   const candidates = matches.length > 1 ? matches : await getPendingMemories(telegramId);
   if (candidates.length === 0) {
-    await sendMessage(chatId, "You have no pending tasks to delete.");
-    return;
+    const r = "You have no pending tasks to delete.";
+    await sendMessage(chatId, r);
+    return r;
   }
   const shown = candidates.slice(0, 5);
   await saveSession(telegramId, shown.map((m) => m.id), "delete_picker");
@@ -1432,6 +1482,7 @@ async function handleDeleteIntent(
     : "Which task would you like to delete?\n";
   const { text, buttons } = formatDeleteOptions(shown, prompt);
   await sendMessageWithButtons(chatId, text, buttons);
+  return text;
 }
 
 async function handleEditIntent(
@@ -1441,14 +1492,15 @@ async function handleEditIntent(
   editField: string | null,
   editValue: string | null,
   targetIndex: number | null = null,
-): Promise<void> {
+): Promise<string> {
   let memory: DbMemory | null = null;
 
   if (targetIndex) {
     memory = await resolveByIndex(telegramId, targetIndex);
     if (!memory) {
-      await sendMessage(chatId, `No item #${targetIndex} in your list.`);
-      return;
+      const r = `No item #${targetIndex} in your list.`;
+      await sendMessage(chatId, r);
+      return r;
     }
   } else if (description) {
     const matches = await findPendingByDescription(telegramId, description);
@@ -1464,13 +1516,15 @@ async function handleEditIntent(
   }
 
   if (!memory) {
-    await sendMessage(chatId, "Which task do you want to edit? Try referencing it by number (e.g. 'change 2 to birthday').");
-    return;
+    const r = "Which task do you want to edit? Try referencing it by number (e.g. 'change 2 to birthday').";
+    await sendMessage(chatId, r);
+    return r;
   }
 
   if (!editField || !editValue) {
-    await sendMessage(chatId, "What would you like to change? (e.g. 'change type to birthday', 'update due date to Friday')");
-    return;
+    const r = "What would you like to change? (e.g. 'change type to birthday', 'update due date to Friday')";
+    await sendMessage(chatId, r);
+    return r;
   }
 
   const updates: Record<string, unknown> = {};
@@ -1487,16 +1541,15 @@ async function handleEditIntent(
   }
 
   await updateMemory(memory.id, updates);
-  await sendMessage(
-    chatId,
-    `\u{270F}\u{FE0F} Updated <b>${escapeHtml(memory.description)}</b>\n${escapeHtml(editField!)} \u{2192} ${escapeHtml(editValue!)}`,
-  );
+  const r = `\u{270F}\u{FE0F} Updated <b>${escapeHtml(memory.description)}</b>\n${escapeHtml(editField!)} \u{2192} ${escapeHtml(editValue!)}`;
+  await sendMessage(chatId, r);
+  return r;
 }
 
 async function handleStatusIntent(
   chatId: number,
   telegramId: number,
-): Promise<void> {
+): Promise<string> {
   const statusUser = await getUser(telegramId);
   const tz = statusUser?.timezone || "Asia/Kolkata";
   const tzOffsetMs = (TZ_OFFSETS[tz] ?? 5.5) * 60 * 60 * 1000;
@@ -1546,5 +1599,7 @@ async function handleStatusIntent(
     lines.push("\nKeep going, you've got this!");
   }
 
-  await sendMessage(chatId, lines.join("\n"));
+  const r = lines.join("\n");
+  await sendMessage(chatId, r);
+  return r;
 }

@@ -28,6 +28,7 @@ import {
   upsertSession,
   getSession,
   createConversationLog,
+  createFeedback,
 } from "../_shared/database.ts";
 import { parseMessage, transcribeAudio, generateEmbedding } from "../_shared/gemini.ts";
 import {
@@ -280,6 +281,9 @@ async function handleCommand(message: TelegramMessage): Promise<void> {
     case "/pending":
       await handlePending(message);
       break;
+    case "/feedback":
+      await handleFeedbackCommand(message, args);
+      break;
     default:
       await sendMessage(chatId, "Unknown command. Try /help to see what I can do.");
   }
@@ -323,6 +327,7 @@ async function handleHelp(chatId: number): Promise<void> {
     "/start \u{2014} Set up or restart the bot\n" +
     "/pending \u{2014} Show all pending tasks\n" +
     "/done &lt;text&gt; \u{2014} Mark a task as done\n" +
+    "/feedback \u{2014} Share feedback with us\n" +
     "/privacy \u{2014} See privacy info\n" +
     "/delete \u{2014} Delete all your data\n" +
     "/help \u{2014} Show this message\n\n" +
@@ -427,6 +432,52 @@ async function handlePending(message: TelegramMessage): Promise<void> {
     console.error("Pending error:", error);
     await sendMessage(chatId, "Something went wrong. Please try again.");
   }
+}
+
+async function handleFeedbackCommand(message: TelegramMessage, args: string): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  // If user provided feedback text inline: /feedback Great bot!
+  if (args.trim()) {
+    try {
+      const user = await getUser(telegramId);
+      await createFeedback({
+        telegram_id: telegramId,
+        username: message.from?.username ?? null,
+        first_name: message.from?.first_name ?? null,
+        category: "general",
+        feedback_text: args.trim(),
+      });
+      const response = "Thanks for your feedback! \u{1F64F}";
+      await sendMessage(chatId, response);
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: `/feedback ${args}`,
+        message_type: "command",
+        primary_intent: "feedback",
+        bot_action: "feedback_saved:general",
+        bot_response: response,
+        processing_time_ms: 0,
+        user_timezone: user?.timezone ?? "Asia/Kolkata",
+      });
+    } catch (error) {
+      console.error("Feedback save error:", error);
+      await sendMessage(chatId, "Something went wrong saving your feedback. Please try again.");
+    }
+    return;
+  }
+
+  // No args — show category picker
+  await sendMessageWithButtons(
+    chatId,
+    "We'd love to hear from you! Pick a category:",
+    [[
+      { text: "\u{1F41B} Bug", callback_data: "feedback_bug" },
+      { text: "\u{1F4A1} Feature", callback_data: "feedback_feature" },
+      { text: "\u{1F4AC} General", callback_data: "feedback_general" },
+    ]],
+  );
 }
 
 // ============================================================
@@ -702,6 +753,31 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       return;
     }
 
+    // Feedback category selection
+    if (data === "feedback_bug" || data === "feedback_feature" || data === "feedback_general") {
+      const category = data.replace("feedback_", "");
+      const categoryLabel = category === "bug" ? "\u{1F41B} Bug" : category === "feature" ? "\u{1F4A1} Feature" : "\u{1F4AC} General";
+      await answerCallbackQuery(query.id, `${categoryLabel} selected`);
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, `${categoryLabel} feedback \u{2014} go ahead, type your feedback:`);
+      }
+      // Store category in intent string (last_shown_ids is uuid[] so can't store text)
+      await saveSession(telegramId, [], `awaiting_feedback:${category}`);
+
+      // Log the callback
+      const fbUser = await getUser(telegramId);
+      await logInteraction({
+        telegram_id: telegramId,
+        user_message: null,
+        message_type: "callback",
+        primary_intent: `feedback_${category}`,
+        bot_action: "feedback_category_selected",
+        processing_time_ms: 0,
+        user_timezone: fbUser?.timezone ?? "Asia/Kolkata",
+      });
+      return;
+    }
+
     if (data.startsWith("rsc:")) {
       // rsc:memoryId:YYYY-MM-DD
       const parts = data.slice(4).split(":");
@@ -806,6 +882,40 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
         return;
       }
       // Not a date response — fall through to normal processing
+    }
+
+    // Feedback awaiting: save the text as feedback
+    if (session?.last_intent?.startsWith("awaiting_feedback:")) {
+      const category = session.last_intent.split(":")[1]; // bug, feature, or general
+      try {
+        await createFeedback({
+          telegram_id: telegramId,
+          username: message.from?.username ?? null,
+          first_name: message.from?.first_name ?? null,
+          category,
+          feedback_text: text,
+        });
+        const response = "Thanks for your feedback! \u{1F64F} We'll use it to make RemindKar better.";
+        await sendMessage(chatId, response);
+        const newHistory = appendHistory(history, text, "feedback_saved");
+        await saveSession(telegramId, [], "feedback_saved", newHistory, sessionId);
+        await logInteraction({
+          telegram_id: telegramId,
+          user_message: text,
+          message_type: "text",
+          primary_intent: "feedback",
+          bot_action: `feedback_saved:${category}`,
+          bot_response: response,
+          session_id: sessionId,
+          processing_time_ms: Date.now() - startMs,
+          user_timezone: user.timezone,
+        });
+        return;
+      } catch (error) {
+        console.error("Feedback save error:", error);
+        await sendMessage(chatId, "Something went wrong saving your feedback. Please try again.");
+        return;
+      }
     }
 
     const parsedItems = await parseMessage(text, history, user.timezone);

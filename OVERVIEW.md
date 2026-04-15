@@ -57,7 +57,7 @@ Incoming Update
             ├── Not consented? ──► Block (except /start, /help)
             │
             ├── /command? ──► handleCommand
-            │     (/start, /help, /status, /pending, /done, /delete, /tz, /search)
+            │     (/start, /help, /status, /pending, /done, /delete, /feedback, /tz, /search)
             │
             ├── Voice message? ──► transcribeAudio() ──► text ──┐
             │                                                    │
@@ -214,6 +214,17 @@ ILIKE fallback (text search)
 | user_timezone | text | User's timezone at time of interaction |
 | created_at | timestamptz | |
 
+### `feedback`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| telegram_id | bigint | |
+| username | text | Telegram username at time of feedback |
+| first_name | text | |
+| category | text | `bug`, `feature`, or `general` |
+| feedback_text | text | Free-form user feedback |
+| created_at | timestamptz | |
+
 ### Audit Archive Tables
 | Table | Mirrors | Trigger | Notes |
 |---|---|---|---|
@@ -252,6 +263,7 @@ ILIKE fallback (text search)
 | **Conversation logging** | Every interaction logged with user message, parsed intents, bot response text, session_id, processing time. Never crashes main flow |
 | **Session grouping** | `session_id` links related interactions; persists in `user_sessions` within 30-min TTL, regenerated on expiry |
 | **Audit archive** | BEFORE DELETE triggers on users/memories/sessions/conversation_logs auto-archive data. Full cascade tracking via `deletion_type` |
+| **Feedback collection** | `/feedback` command shows category buttons (Bug/Feature/General); user picks, then types feedback. `/feedback <text>` saves directly. Stored in `feedback` table |
 
 ---
 

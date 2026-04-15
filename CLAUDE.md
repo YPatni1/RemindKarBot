@@ -6,7 +6,7 @@ Telegram bot (RemindKar) — personal AI memory and commitment tracker. Users se
 ## Stack
 - **Runtime:** Supabase Edge Functions (Deno/TypeScript)
 - **AI:** Gemini 2.5 Flash for NLU parsing, text-embedding-004 for vector embeddings (NOT 2.0 — deprecated)
-- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`)
+- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `feedback`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`)
 - **Cron:** pg_cron + pg_net (digest at 3:30 UTC, reminders every 5 min)
 - **Bot API:** Telegram Bot API via webhooks (NOT polling)
 
@@ -31,6 +31,7 @@ supabase/
     005_conversation_logs.sql    # conversation_logs table for observability
     006_audit_tables.sql         # Archive tables + BEFORE DELETE triggers for buildathon data retention
     007_logging_improvements.sql  # bot_response, session_id, archived_conversation_logs, callback intents
+    008_feedback.sql               # User feedback collection table
 ```
 
 ## Supported Intents
@@ -87,6 +88,8 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - Audit archive tables: BEFORE DELETE triggers on `users`, `memories`, `user_sessions` auto-copy data to `archived_*` tables. `pg_trigger_depth()` distinguishes CASCADE (`account_cascade`) from direct deletes (`direct`). No app code changes — purely database-level. Preserves evidence of user activity for buildathon demos.
 - `archived_conversation_logs`: On user account deletion, a BEFORE DELETE trigger on `users` archives all conversation_logs for that telegram_id, then deletes originals. Ensures full data cleanup on /delete while preserving audit trail.
 - `routeParsedIntent` returns `{ summary, response }` — summary is a brief action label (for conversation history), response is the actual bot message text (for logging).
+- Feedback collection: `/feedback` command shows category buttons (Bug, Feature, General). User picks category → session intent set to `awaiting_feedback:<category>` → next text message saved to `feedback` table. `/feedback <text>` saves directly as "general". Category stored in `last_intent` string (not `last_shown_ids` which is `uuid[]`).
+- `createFeedback` in database.ts inserts to `feedback` table (telegram_id, username, first_name, category, feedback_text).
 
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

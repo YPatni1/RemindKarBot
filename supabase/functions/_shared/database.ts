@@ -433,6 +433,19 @@ export async function createConversationLog(log: {
   if (error) console.error("Failed to write conversation log:", error);
 }
 
+// ---- Feedback ----
+
+export async function createFeedback(feedback: {
+  telegram_id: number;
+  username: string | null;
+  first_name: string | null;
+  category: string;
+  feedback_text: string;
+}): Promise<void> {
+  const { error } = await supabase.from("feedback").insert(feedback);
+  if (error) throw error;
+}
+
 // ---- Sessions ----
 
 export async function getSession(

@@ -1,5 +1,6 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { DbUser, DbMemory, ConversationMessage } from "./types.ts";
+import { TZ_OFFSETS } from "./constants.ts";
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -314,20 +315,7 @@ export async function getDuePreReminders(): Promise<DbMemory[]> {
   return (data ?? []) as DbMemory[];
 }
 
-// Timezone offset map (hours from UTC)
-const TZ_OFFSETS: Record<string, number> = {
-  "Asia/Kolkata": 5.5,
-  "America/New_York": -5,
-  "America/Chicago": -6,
-  "America/Denver": -7,
-  "America/Los_Angeles": -8,
-  "Europe/London": 0,
-  "Europe/Berlin": 1,
-  "Asia/Dubai": 4,
-  "Asia/Singapore": 8,
-  "Asia/Tokyo": 9,
-  "Australia/Sydney": 11,
-};
+// TZ_OFFSETS imported from constants.ts
 
 // For send-digest: get pending memories grouped by due date category
 export async function getDigestMemories(telegramId: number, timezone = "Asia/Kolkata"): Promise<{

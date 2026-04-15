@@ -1,23 +1,9 @@
 import { GeminiParsedResponse, ConversationMessage } from "./types.ts";
+import { TZ_OFFSETS } from "./constants.ts";
 
 const GEMINI_API_KEY = Deno.env.get("GEMINI_API_KEY")!;
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
 const EMBEDDING_URL = `https://generativelanguage.googleapis.com/v1beta/models/text-embedding-004:embedContent?key=${GEMINI_API_KEY}`;
-
-// Timezone offset map for IANA timezone names
-const TZ_OFFSETS: Record<string, number> = {
-  "Asia/Kolkata": 5.5,
-  "America/New_York": -5,
-  "America/Chicago": -6,
-  "America/Denver": -7,
-  "America/Los_Angeles": -8,
-  "Europe/London": 0,
-  "Europe/Berlin": 1,
-  "Asia/Dubai": 4,
-  "Asia/Singapore": 8,
-  "Asia/Tokyo": 9,
-  "Australia/Sydney": 11,
-};
 
 function getCurrentDatetime(timezone: string): string {
   const now = new Date();
@@ -75,9 +61,32 @@ Each object should have this structure:
 }
 
 Rules:
-- "kal" means tomorrow, "parson" means day after tomorrow, "aaj" means today
-- "next Friday" when today is Thursday means the Friday of NEXT week, not tomorrow
-- "EOD" means 6:00 PM IST, "EOW" means Friday 6:00 PM IST
+
+Date & time interpretation:
+- If today is X-day and user says "X-day" (same day name), interpret as NEXT week's X-day (7 days), not today. "This X-day" = today.
+- "next Friday" = the Friday of NEXT week (never today/tomorrow even if today is Thursday)
+- "this Friday" = the closest upcoming Friday (could be today if today is Friday)
+- "tomorrow" / "kal" = next calendar day. "day after" / "parson" = 2 days from now.
+- Time-of-day defaults (in user's local timezone): "morning" / "subah" = 9:00 AM, "afternoon" / "dopahar" = 2:00 PM, "evening" / "sham" / "sandhyakali" = 6:00 PM, "night" / "raat" = 9:00 PM
+- "EOD" / "end of day" = 6:00 PM local time. "EOW" / "end of week" = Friday 6:00 PM local time.
+- "next week" = Monday of the following week, 9:00 AM local. "next month" = 1st of next month, 9:00 AM local.
+- "weekend" / "this weekend" = Saturday 9:00 AM local.
+- If a time is given without AM/PM: 1-6 = PM, 7-11 = AM, 12 = PM (noon).
+
+Hindi / Hinglish temporal expressions:
+- "kal" = tomorrow, "parson" / "parso" = day after tomorrow, "aaj" = today, "abhi" = right now
+- "agle hafte" / "agla hafta" = next week, "is hafte" = this week
+- "mahine ke end mein" = end of month, "agle mahine" = next month
+- "subah" = morning (9 AM), "dopahar" = afternoon (2 PM), "sham" / "shaam" = evening (6 PM), "raat" = night (9 PM)
+- "ek ghante mein" = in 1 hour, "aadha ghanta" = 30 minutes, "das minute" = 10 minutes
+- "somvaar" = Monday, "mangalvaar" = Tuesday, "budhvaar" = Wednesday, "guruvaar" / "brihaspativaar" = Thursday, "shukravaar" = Friday, "shanivaar" = Saturday, "ravivaar" = Sunday
+
+Marathi temporal expressions:
+- "udya" = tomorrow, "parva" = day after tomorrow, "aaj" = today
+- "pudchya aathavdyat" = next week, "ya aathavdyat" = this week
+- "sakaali" = morning, "dupari" = afternoon, "sandhyakali" = evening, "raatri" = night
+
+General rules:
 - If no date/time is mentioned for a task, set due_date to null (it's a someday task)
 - If the user is asking a question about their stored data, set intent to "query"
 - For queries with time filters ("this week", "today", "last Tuesday", "what did I add yesterday"), set query_date_start and query_date_end to define the date range to search within

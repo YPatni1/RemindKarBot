@@ -19,6 +19,7 @@ supabase/
     send-digest/index.ts        # Cron: morning digest per user
     _shared/
       types.ts                  # TypeScript interfaces
+      constants.ts              # Shared constants (TZ_OFFSETS)
       telegram.ts               # Telegram Bot API helpers
       database.ts               # Supabase client + CRUD + semantic search + sessions
       gemini.ts                 # Gemini REST API (parse + transcribe + embeddings)
@@ -70,7 +71,7 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - "delete everything/all" triggers a safety confirmation — deletes memories only, keeps user account (`deleteAllMemories`). `/delete` command triggers full account deletion with confirmation.
 - Two delete flows: `confirm_delete_all` = memories only (keeps account), `confirm_account_delete` = full user deletion (cascade). `cancel_delete` callback used for both cancel actions.
 - Per-user timezone: captured during onboarding (9 timezone options), stored in `users.timezone`, threaded through Gemini prompt, formatters, digest, reminders, and status. Fallback: `Asia/Kolkata`.
-- `TZ_OFFSETS` map duplicated in index.ts, gemini.ts, database.ts — kept in sync manually. Covers India, US, UK, Europe, Asia-Pacific.
+- `TZ_OFFSETS` map lives in `_shared/constants.ts` (single source of truth). Imported by index.ts, gemini.ts, database.ts. Covers India, US, UK, Europe, Asia-Pacific.
 - Gemini timezone prompt: `getCurrentDatetime` provides BOTH UTC ISO and local time. Prompt instructs Gemini to add relative offsets ("in 10 min") to UTC directly, and convert absolute local times to UTC by subtracting offset. Prevents the "local time treated as UTC" bug.
 - `localHourToUtcDate(year, month, day, localHour, timezone)` helper in index.ts — handles fractional timezone offsets correctly (Date.UTC truncates fractional hours, so we use Math.floor + modulo for minutes).
 - Date-filtered queries: Gemini extracts `query_date_start`/`query_date_end` for time-scoped queries ("this week", "last Tuesday"). `getMemoriesByDateRange` filters by `due_date` or `created_at` depending on phrasing. Display uses rawInput, not Gemini's extracted query_text.
@@ -90,6 +91,10 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - `routeParsedIntent` returns `{ summary, response }` — summary is a brief action label (for conversation history), response is the actual bot message text (for logging).
 - Feedback collection: `/feedback` command shows category buttons (Bug, Feature, General). User picks category → session intent set to `awaiting_feedback:<category>` → next text message saved to `feedback` table. `/feedback <text>` saves directly as "general". Category stored in `last_intent` string (not `last_shown_ids` which is `uuid[]`).
 - `createFeedback` in database.ts inserts to `feedback` table (telegram_id, username, first_name, category, feedback_text).
+- Gemini prompt includes expanded Hindi/Marathi temporal vocabulary (subah, dopahar, sham, raat, agle hafte, udya, parva, etc.) and date disambiguation rules ("next Friday" = next week, time-of-day defaults: morning=9AM, evening=6PM).
+- Low-confidence gate: if `parsed.confidence < 0.6` on storage intents, appends "Not what you meant? Say delete/edit this" hint.
+- Voice note length guard: <1s rejected, >120s warned before processing.
+- Completion celebrations: `getCelebrationMessage` returns context-aware done messages (first of day, 5th task, all caught up). Used in both `handleDoneIntent` and `done:` callback.
 
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

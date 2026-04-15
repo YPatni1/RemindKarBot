@@ -1,4 +1,5 @@
 import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, GeminiParsedResponse, DbMemory, ConversationMessage } from "../_shared/types.ts";
+import { TZ_OFFSETS } from "../_shared/constants.ts";
 import {
   sendMessage,
   sendMessageWithButtons,
@@ -56,20 +57,7 @@ async function saveSession(
   }
 }
 
-// Timezone offset map (mirrors gemini.ts)
-const TZ_OFFSETS: Record<string, number> = {
-  "Asia/Kolkata": 5.5,
-  "America/New_York": -5,
-  "America/Chicago": -6,
-  "America/Denver": -7,
-  "America/Los_Angeles": -8,
-  "Europe/London": 0,
-  "Europe/Berlin": 1,
-  "Asia/Dubai": 4,
-  "Asia/Singapore": 8,
-  "Asia/Tokyo": 9,
-  "Australia/Sydney": 11,
-};
+// TZ_OFFSETS imported from _shared/constants.ts
 
 // Get tomorrow 9 AM in user's timezone as UTC Date
 function getTomorrowMorning(timezone: string): Date {
@@ -153,6 +141,48 @@ async function logInteraction(log: {
   } catch (err) {
     console.error("logInteraction failed (non-fatal):", err);
   }
+}
+
+// ============================================================
+// Celebration messages for task completion
+// ============================================================
+
+const DONE_MESSAGES = [
+  "\u{2705} Done: {task}",
+  "\u{2705} Done: {task} \u{2014} nice work!",
+  "\u{2705} Done: {task} \u{2014} keep it up!",
+  "\u{2705} Done: {task} \u{2014} one down!",
+];
+
+async function getCelebrationMessage(telegramId: number, taskDescription: string): Promise<string> {
+  const base = DONE_MESSAGES[Math.floor(Math.random() * DONE_MESSAGES.length)]
+    .replace("{task}", escapeHtml(taskDescription));
+
+  try {
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+    const completedToday = await getCompletedSince(telegramId, todayStart.toISOString());
+
+    if (completedToday === 1) {
+      return base + "\n\u{1F4AA} First one today!";
+    }
+    if (completedToday === 5) {
+      return base + "\n\u{1F525} 5 tasks done today!";
+    }
+    if (completedToday === 10) {
+      return base + "\n\u{1F389} Double digits today!";
+    }
+
+    // Check if all pending are now done
+    const pending = await getPendingMemories(telegramId);
+    if (pending.length === 0) {
+      return base + "\n\u{1F389} All caught up \u{2014} nothing pending!";
+    }
+  } catch {
+    // Non-fatal — just return base message
+  }
+
+  return base;
 }
 
 // ============================================================
@@ -567,8 +597,10 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
         const onboardingText =
           `Perfect! Every morning at ${digestTimeStr} I'll send you a summary of your day.\n\n` +
-          "Let's try it \u{2014} tell me something you need to remember.\n" +
-          "Or just tap an example:";
+          `<b>Try it now</b> \u{2014} type or voice-send something like:\n` +
+          `\u{2022} "Remind me to call Mom tomorrow at 5 PM"\n` +
+          `\u{2022} "Buy groceries this weekend"\n\n` +
+          "Or tap an example below \u{1F447}";
 
         await sendMessageWithButtons(chatId, onboardingText, [
           [{ text: "\u{1F4DE} Call mom tomorrow 5 PM", callback_data: "example:call_mom" }],
@@ -677,13 +709,17 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
     if (data.startsWith("done:")) {
       const memoryId = data.slice(5);
+      const doneMemory = await getMemoryById(memoryId);
       await updateMemory(memoryId, {
         status: "done",
         completed_at: new Date().toISOString(),
       });
       await answerCallbackQuery(query.id, "Marked as done!");
       if (chatId && messageId) {
-        await editMessageText(chatId, messageId, "\u{2705} Task completed!");
+        const celebrationText = doneMemory
+          ? await getCelebrationMessage(telegramId, doneMemory.description)
+          : "\u{2705} Task completed!";
+        await editMessageText(chatId, messageId, celebrationText);
       }
       return;
     }
@@ -1048,6 +1084,16 @@ async function handleVoice(message: TelegramMessage, startMs = Date.now()): Prom
   const sessionId = session?.session_id ?? crypto.randomUUID();
   const history = session?.conversation_history ?? [];
 
+  // Guard: very short or very long voice notes
+  const duration = message.voice!.duration;
+  if (duration < 1) {
+    await sendMessage(chatId, "That was too short \u{2014} try a longer voice note?");
+    return;
+  }
+  if (duration > 120) {
+    await sendMessage(chatId, "\u{26A0}\u{FE0F} That's a long voice note! I'll do my best, but shorter messages work better for accuracy.");
+  }
+
   try {
     const audioBytes = await downloadTelegramFile(message.voice!.file_id);
     if (!audioBytes) {
@@ -1313,10 +1359,14 @@ async function routeParsedIntent(
       }
 
       const { text, buttons } = formatConfirmation(memory, userTimezone);
-      await sendMessageWithButtons(chatId, text, buttons);
+      const lowConfidence = parsed.confidence < 0.6;
+      const displayText = lowConfidence
+        ? text + "\n\n<i>Not what you meant? Say \"delete this\" or \"edit this\".</i>"
+        : text;
+      await sendMessageWithButtons(chatId, displayText, buttons);
 
       const dueSummary = memory.due_date ? ` due ${new Date(memory.due_date).toLocaleDateString()}` : " (no deadline)";
-      return { summary: `Saved ${parsed.intent}: ${parsed.description}${dueSummary}`, response: text };
+      return { summary: `Saved ${parsed.intent}: ${parsed.description}${dueSummary}`, response: displayText };
     }
   }
 }
@@ -1441,7 +1491,7 @@ async function handleDoneIntent(
       return r;
     }
     await updateMemory(memory.id, { status: "done", completed_at: new Date().toISOString() });
-    const r = `\u{2705} Done: ${escapeHtml(memory.description)}`;
+    const r = await getCelebrationMessage(telegramId, memory.description);
     await sendMessage(chatId, r);
     return r;
   }
@@ -1467,7 +1517,7 @@ async function handleDoneIntent(
       status: "done",
       completed_at: new Date().toISOString(),
     });
-    const r = `\u{2705} Done: ${escapeHtml(matches[0].description)}`;
+    const r = await getCelebrationMessage(telegramId, matches[0].description);
     await sendMessage(chatId, r);
     return r;
   } else {

@@ -260,6 +260,10 @@ ILIKE fallback (text search)
 | **Resilience order** | Save memory → generate embedding → save session. Embedding/session failures never block memory storage |
 | **Consent gate** | All non-command messages blocked until user accepts via /start |
 | **Unsupported inputs** | Photos, stickers, docs → helpful "I can only handle text/voice" message |
+| **Low-confidence gate** | Storage intents with confidence < 0.6 get "Not what you meant?" hint appended |
+| **Voice guards** | Voice notes < 1s rejected, > 120s warned before processing |
+| **Completion celebrations** | Context-aware done messages: "First one today!", "5 tasks done!", "All caught up!" |
+| **Extended NLU** | Hindi/Marathi temporal vocabulary (subah, sham, agle hafte, udya, parva) + date disambiguation rules |
 | **Conversation logging** | Every interaction logged with user message, parsed intents, bot response text, session_id, processing time. Never crashes main flow |
 | **Session grouping** | `session_id` links related interactions; persists in `user_sessions` within 30-min TTL, regenerated on expiry |
 | **Audit archive** | BEFORE DELETE triggers on users/memories/sessions/conversation_logs auto-archive data. Full cascade tracking via `deletion_type` |

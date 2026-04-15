@@ -170,6 +170,8 @@ ILIKE fallback (text search)
 | consent_given | boolean | Gate for all interactions |
 | timezone | text | IANA tz string, default `Asia/Kolkata` |
 | is_active, last_active_at | bool / timestamptz | |
+| current_streak, longest_streak | integer | Completion streak tracking |
+| last_streak_date | date | Last date a task was completed |
 
 ### `memories`
 | Column | Type | Notes |
@@ -186,6 +188,7 @@ ILIKE fallback (text search)
 | source | text | text / voice / forwarded |
 | entities | jsonb | {people, projects, locations} |
 | description_embedding | vector(768) | pgvector semantic search |
+| snooze_count | integer | Times this item has been snoozed |
 
 ### `user_sessions`
 | Column | Type | Notes |
@@ -268,6 +271,13 @@ ILIKE fallback (text search)
 | **Session grouping** | `session_id` links related interactions; persists in `user_sessions` within 30-min TTL, regenerated on expiry |
 | **Audit archive** | BEFORE DELETE triggers on users/memories/sessions/conversation_logs auto-archive data. Full cascade tracking via `deletion_type` |
 | **Feedback collection** | `/feedback` command shows category buttons (Bug/Feature/General); user picks, then types feedback. `/feedback <text>` saves directly. Stored in `feedback` table |
+| **Smart snooze** | Time-aware snooze picker: shows morning/afternoon/evening/tomorrow options based on current local hour |
+| **Undo done** | 30-second undo window after marking task done; reverts to pending via `undo_done:` callback |
+| **Snooze escalation** | Tracks `snooze_count` per memory; after 3 snoozes, suggests done/delete/reschedule |
+| **Entity linking** | After saving, runs semantic search for related pending items; shows up to 2 in confirmation |
+| **Wrong? correction** | "Wrong?" button on confirmations; lets user fix type, date, or description inline |
+| **Browse by type** | `/pending` shows filter buttons (Tasks/Notes/Events/Overdue); filters edit message in place |
+| **Streak tracking** | Tracks completion streaks per user; shown in daily digest with personal-best indicator |
 
 ---
 

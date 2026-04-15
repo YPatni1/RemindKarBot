@@ -26,6 +26,8 @@ import {
   getMemoryById,
   getMemoriesByDateRange,
   semanticSearch,
+  getOverdueMemories,
+  updateUserStreak,
   upsertSession,
   getSession,
   createConversationLog,
@@ -183,6 +185,37 @@ async function getCelebrationMessage(telegramId: number, taskDescription: string
   }
 
   return base;
+}
+
+// ============================================================
+// Streak tracking — updates user's completion streak
+// ============================================================
+
+async function updateStreak(telegramId: number): Promise<void> {
+  try {
+    const user = await getUser(telegramId);
+    if (!user) return;
+
+    const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const lastDate = (user as Record<string, unknown>).last_streak_date as string | null;
+
+    if (lastDate === today) return; // Already counted today
+
+    const yesterday = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+    let newStreak: number;
+
+    if (lastDate === yesterday) {
+      newStreak = ((user as Record<string, unknown>).current_streak as number ?? 0) + 1;
+    } else {
+      newStreak = 1; // streak broken or first day
+    }
+
+    const longestStreak = Math.max(newStreak, (user as Record<string, unknown>).longest_streak as number ?? 0);
+
+    await updateUserStreak(telegramId, newStreak, longestStreak, today);
+  } catch (err) {
+    console.error("Streak update failed (non-fatal):", err);
+  }
 }
 
 // ============================================================
@@ -453,11 +486,15 @@ async function handlePending(message: TelegramMessage): Promise<void> {
     const memories = await getPendingMemories(telegramId);
     await saveSession(telegramId, memories.map((m) => m.id), "pending");
     const { text, buttons } = formatPendingList(memories, user.timezone);
-    if (buttons.length > 0) {
-      await sendMessageWithButtons(chatId, text, buttons);
-    } else {
-      await sendMessage(chatId, text);
-    }
+    // Add filter row
+    const filterRow: TelegramInlineKeyboardButton[] = [
+      { text: "\u{1F4CB} Tasks", callback_data: "filter:task" },
+      { text: "\u{1F4DD} Notes", callback_data: "filter:note" },
+      { text: "\u{1F4C5} Events", callback_data: "filter:event" },
+      { text: "\u{1F6A8} Overdue", callback_data: "filter:overdue" },
+    ];
+    const allButtons = [...buttons, filterRow];
+    await sendMessageWithButtons(chatId, text, allButtons);
   } catch (error) {
     console.error("Pending error:", error);
     await sendMessage(chatId, "Something went wrong. Please try again.");
@@ -707,6 +744,49 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       return;
     }
 
+    // Filter pending list by type or overdue
+    if (data.startsWith("filter:")) {
+      const filterType = data.slice(7);
+      await answerCallbackQuery(query.id);
+      const user = await getUser(telegramId);
+      const tz = user?.timezone || "Asia/Kolkata";
+
+      let memories: DbMemory[];
+      let label: string;
+      if (filterType === "overdue") {
+        memories = await getOverdueMemories(telegramId);
+        label = "\u{1F6A8} Overdue";
+      } else {
+        memories = await getPendingMemories(telegramId, filterType);
+        label = filterType.charAt(0).toUpperCase() + filterType.slice(1) + "s";
+      }
+
+      await saveSession(telegramId, memories.map((m) => m.id), "pending");
+      const { text, buttons } = formatPendingList(memories, tz);
+      const headerText = `<b>${label}:</b>\n${text}`;
+      const filterRow: TelegramInlineKeyboardButton[] = [
+        { text: "\u{1F4CB} Tasks", callback_data: "filter:task" },
+        { text: "\u{1F4DD} Notes", callback_data: "filter:note" },
+        { text: "\u{1F4C5} Events", callback_data: "filter:event" },
+        { text: "\u{1F6A8} Overdue", callback_data: "filter:overdue" },
+      ];
+      const backRow: TelegramInlineKeyboardButton[] = [
+        { text: "\u{25C0}\u{FE0F} All pending", callback_data: "filter:all" },
+      ];
+      if (chatId && messageId) {
+        if (filterType === "all") {
+          // Show unfiltered list
+          const allMem = await getPendingMemories(telegramId);
+          await saveSession(telegramId, allMem.map((m) => m.id), "pending");
+          const allResult = formatPendingList(allMem, tz);
+          await editMessageWithButtons(chatId, messageId, allResult.text, [...allResult.buttons, filterRow]);
+        } else {
+          await editMessageWithButtons(chatId, messageId, headerText, [...buttons, backRow]);
+        }
+      }
+      return;
+    }
+
     if (data.startsWith("done:")) {
       const memoryId = data.slice(5);
       const doneMemory = await getMemoryById(memoryId);
@@ -714,31 +794,249 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
         status: "done",
         completed_at: new Date().toISOString(),
       });
+
+      // Update streak
+      await updateStreak(telegramId);
+
       await answerCallbackQuery(query.id, "Marked as done!");
       if (chatId && messageId) {
         const celebrationText = doneMemory
           ? await getCelebrationMessage(telegramId, doneMemory.description)
           : "\u{2705} Task completed!";
-        await editMessageText(chatId, messageId, celebrationText);
+        await editMessageWithButtons(chatId, messageId, celebrationText, [
+          [{ text: "\u{21A9}\u{FE0F} Undo", callback_data: `undo_done:${memoryId}` }],
+        ]);
+      }
+      return;
+    }
+
+    if (data.startsWith("undo_done:")) {
+      const memoryId = data.slice(10);
+      const memory = await getMemoryById(memoryId);
+      if (!memory || memory.status !== "done") {
+        await answerCallbackQuery(query.id, "Can't undo \u{2014} task was modified.");
+        return;
+      }
+      // Check 30-second window using completed_at
+      const completedAt = memory.completed_at ? new Date(memory.completed_at).getTime() : 0;
+      if (Date.now() - completedAt > 30_000) {
+        await answerCallbackQuery(query.id, "Undo window expired (30s).");
+        return;
+      }
+      await updateMemory(memoryId, {
+        status: "pending",
+        completed_at: null,
+      });
+      await answerCallbackQuery(query.id, "Undone!");
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, `\u{21A9}\u{FE0F} Undone: ${escapeHtml(memory.description)} \u{2014} back to pending.`);
       }
       return;
     }
 
     if (data.startsWith("snooze:")) {
       const memoryId = data.slice(7);
-      const newReminder = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      await answerCallbackQuery(query.id);
+
+      // Show context-aware snooze options based on current time
+      const snzUser = await getUser(telegramId);
+      const snzTz = snzUser?.timezone || "Asia/Kolkata";
+      const snzOffset = TZ_OFFSETS[snzTz] ?? 5.5;
+      const localHour = (new Date().getUTCHours() + snzOffset + 24) % 24;
+
+      let snoozeButtons: TelegramInlineKeyboardButton[][];
+      if (localHour >= 6 && localHour < 12) {
+        // Morning
+        snoozeButtons = [
+          [
+            { text: "\u{23F1} +1 hour", callback_data: `snz_do:${memoryId}:1h` },
+            { text: "\u{2600}\u{FE0F} This afternoon", callback_data: `snz_do:${memoryId}:afternoon` },
+          ],
+          [
+            { text: "\u{1F305} Tomorrow morning", callback_data: `snz_do:${memoryId}:tomorrow` },
+          ],
+        ];
+      } else if (localHour >= 12 && localHour < 18) {
+        // Afternoon
+        snoozeButtons = [
+          [
+            { text: "\u{23F1} +1 hour", callback_data: `snz_do:${memoryId}:1h` },
+            { text: "\u{1F307} This evening", callback_data: `snz_do:${memoryId}:evening` },
+          ],
+          [
+            { text: "\u{1F305} Tomorrow morning", callback_data: `snz_do:${memoryId}:tomorrow` },
+          ],
+        ];
+      } else {
+        // Evening/Night
+        snoozeButtons = [
+          [
+            { text: "\u{23F1} +1 hour", callback_data: `snz_do:${memoryId}:1h` },
+            { text: "\u{1F305} Tomorrow morning", callback_data: `snz_do:${memoryId}:tomorrow` },
+          ],
+          [
+            { text: "\u{2600}\u{FE0F} Tomorrow afternoon", callback_data: `snz_do:${memoryId}:tom_afternoon` },
+          ],
+        ];
+      }
+
+      if (chatId && messageId) {
+        await editMessageWithButtons(chatId, messageId, "\u{23F0} Snooze until when?", snoozeButtons);
+      }
+      return;
+    }
+
+    if (data.startsWith("snz_do:")) {
+      const parts = data.slice(7).split(":");
+      const memoryId = parts[0];
+      const option = parts[1];
+
+      const snzUser = await getUser(telegramId);
+      const snzTz = snzUser?.timezone || "Asia/Kolkata";
+      const snzOffset = TZ_OFFSETS[snzTz] ?? 5.5;
+
+      let newReminder: Date;
+      let label: string;
+
+      switch (option) {
+        case "1h":
+          newReminder = new Date(Date.now() + 60 * 60 * 1000);
+          label = "in 1 hour";
+          break;
+        case "afternoon":
+          newReminder = new Date();
+          newReminder.setUTCHours(Math.floor(14 - snzOffset), Math.round(((14 - snzOffset) % 1) * 60), 0, 0);
+          if (newReminder <= new Date()) newReminder = new Date(Date.now() + 60 * 60 * 1000);
+          label = "this afternoon";
+          break;
+        case "evening":
+          newReminder = new Date();
+          newReminder.setUTCHours(Math.floor(18 - snzOffset), Math.round(((18 - snzOffset) % 1) * 60), 0, 0);
+          if (newReminder <= new Date()) newReminder = new Date(Date.now() + 60 * 60 * 1000);
+          label = "this evening";
+          break;
+        case "tomorrow":
+          newReminder = getTomorrowMorning(snzTz);
+          label = "tomorrow morning";
+          break;
+        case "tom_afternoon": {
+          const tmrw = new Date();
+          tmrw.setUTCDate(tmrw.getUTCDate() + 1);
+          const utcHour = 14 - snzOffset;
+          tmrw.setUTCHours(Math.floor(utcHour), Math.round((utcHour % 1) * 60), 0, 0);
+          newReminder = tmrw;
+          label = "tomorrow afternoon";
+          break;
+        }
+        default:
+          newReminder = new Date(Date.now() + 60 * 60 * 1000);
+          label = "in 1 hour";
+      }
+
+      // Increment snooze count
+      const snzMemory = await getMemoryById(memoryId);
+      const snoozeCount = (snzMemory as Record<string, unknown>)?.snooze_count as number ?? 0;
+
       await updateMemory(memoryId, {
-        reminder_at: newReminder,
+        reminder_at: newReminder.toISOString(),
         is_reminded: false,
         is_pre_reminded: false,
+        snooze_count: snoozeCount + 1,
       });
-      await answerCallbackQuery(query.id, "Snoozed for 1 hour!");
+
+      await answerCallbackQuery(query.id, `Snoozed ${label}!`);
+
+      let responseText = `\u{23F0} Snoozed ${label}!`;
+      if (snoozeCount + 1 >= 3 && snzMemory) {
+        responseText = `\u{26A0}\u{FE0F} Snoozed ${snoozeCount + 1} times: ${escapeHtml(snzMemory.description)}\n\nKeep rescheduling, or time to drop it?`;
+      }
+
       if (chatId && messageId) {
-        await editMessageText(
-          chatId,
-          messageId,
-          "\u{23F0} Snoozed! I'll remind you again in 1 hour.",
-        );
+        if (snoozeCount + 1 >= 3 && snzMemory) {
+          await editMessageWithButtons(chatId, messageId, responseText, [
+            [
+              { text: "\u{1F4C5} Reschedule", callback_data: `snooze:${memoryId}` },
+              { text: "\u{1F5D1} Drop it", callback_data: `delete:${memoryId}` },
+            ],
+            [
+              { text: "\u{2705} Done actually", callback_data: `done:${memoryId}` },
+            ],
+          ]);
+        } else {
+          await editMessageText(chatId, messageId, responseText);
+        }
+      }
+      return;
+    }
+
+    // "Wrong?" correction flow
+    if (data.startsWith("wrong:")) {
+      const memoryId = data.slice(6);
+      await answerCallbackQuery(query.id);
+      if (chatId && messageId) {
+        await editMessageWithButtons(chatId, messageId, "What did I get wrong?", [
+          [
+            { text: "\u{1F3F7} Type", callback_data: `fix_type:${memoryId}` },
+            { text: "\u{1F4C5} Date", callback_data: `fix_date:${memoryId}` },
+          ],
+          [
+            { text: "\u{270F}\u{FE0F} Description", callback_data: `fix_desc:${memoryId}` },
+            { text: "\u{1F5D1} Delete it", callback_data: `delete:${memoryId}` },
+          ],
+        ]);
+      }
+      return;
+    }
+
+    if (data.startsWith("fix_type:")) {
+      const memoryId = data.slice(9);
+      await answerCallbackQuery(query.id);
+      if (chatId && messageId) {
+        await editMessageWithButtons(chatId, messageId, "What type should it be?", [
+          [
+            { text: "\u{1F4CB} Task", callback_data: `set_type:${memoryId}:task` },
+            { text: "\u{23F0} Reminder", callback_data: `set_type:${memoryId}:reminder` },
+            { text: "\u{1F4C5} Event", callback_data: `set_type:${memoryId}:event` },
+          ],
+          [
+            { text: "\u{1F382} Birthday", callback_data: `set_type:${memoryId}:birthday` },
+            { text: "\u{1F4DD} Note", callback_data: `set_type:${memoryId}:note` },
+          ],
+        ]);
+      }
+      return;
+    }
+
+    if (data.startsWith("set_type:")) {
+      const parts = data.slice(9).split(":");
+      const memoryId = parts[0];
+      const newType = parts[1];
+      await updateMemory(memoryId, { type: newType });
+      await answerCallbackQuery(query.id, `Changed to ${newType}!`);
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, `\u{2705} Updated type to <b>${newType}</b>.`);
+      }
+      return;
+    }
+
+    if (data.startsWith("fix_date:")) {
+      const memoryId = data.slice(9);
+      await answerCallbackQuery(query.id);
+      // Set session to awaiting_date so next message is interpreted as a date
+      await saveSession(telegramId, [memoryId], "awaiting_date");
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, "When should it be? Type the date/time (e.g. \"tomorrow 5pm\", \"Friday\").");
+      }
+      return;
+    }
+
+    if (data.startsWith("fix_desc:")) {
+      const memoryId = data.slice(9);
+      await answerCallbackQuery(query.id);
+      // Set session to awaiting edit
+      await saveSession(telegramId, [memoryId], "awaiting_description");
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, "Type the correct description:");
       }
       return;
     }
@@ -950,6 +1248,38 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
       } catch (error) {
         console.error("Feedback save error:", error);
         await sendMessage(chatId, "Something went wrong saving your feedback. Please try again.");
+        return;
+      }
+    }
+
+    // Description correction: if awaiting_description, update the memory's description
+    if (session?.last_intent === "awaiting_description" && session.last_shown_ids.length > 0) {
+      const memoryId = session.last_shown_ids[0];
+      try {
+        await updateMemory(memoryId, { description: text });
+        try {
+          const newEmbed = await generateEmbedding(text);
+          await updateMemory(memoryId, { description_embedding: `[${newEmbed.join(",")}]` });
+        } catch { /* non-fatal */ }
+        const response = `\u{2705} Updated description to: <b>${escapeHtml(text)}</b>`;
+        await sendMessage(chatId, response);
+        const newHistory = appendHistory(history, text, "description_updated");
+        await saveSession(telegramId, [memoryId], "edited", newHistory, sessionId);
+        await logInteraction({
+          telegram_id: telegramId,
+          user_message: text,
+          message_type: "text",
+          primary_intent: "fix_description",
+          bot_action: "description_updated",
+          bot_response: response,
+          session_id: sessionId,
+          processing_time_ms: Date.now() - startMs,
+          user_timezone: user.timezone,
+        });
+        return;
+      } catch (error) {
+        console.error("Description update error:", error);
+        await sendMessage(chatId, "Something went wrong. Please try again.");
         return;
       }
     }
@@ -1359,10 +1689,27 @@ async function routeParsedIntent(
       }
 
       const { text, buttons } = formatConfirmation(memory, userTimezone);
+      let displayText = text;
+
+      // Entity-linked related items: show related pending items if embedding available
+      if (embedding) {
+        try {
+          const related = await semanticSearch(telegramId, embedding, "pending", 0.75, 3);
+          // Filter out the item we just saved
+          const others = related.filter((r) => r.id !== memory.id);
+          if (others.length > 0) {
+            const relatedLines = others.map((r) => `  \u{2022} ${escapeHtml(r.description)}`).join("\n");
+            displayText += `\n\n\u{1F517} <b>Related:</b>\n${relatedLines}`;
+          }
+        } catch {
+          // Non-fatal
+        }
+      }
+
       const lowConfidence = parsed.confidence < 0.6;
-      const displayText = lowConfidence
-        ? text + "\n\n<i>Not what you meant? Say \"delete this\" or \"edit this\".</i>"
-        : text;
+      if (lowConfidence) {
+        displayText += "\n\n<i>Not what you meant? Say \"delete this\" or \"edit this\".</i>";
+      }
       await sendMessageWithButtons(chatId, displayText, buttons);
 
       const dueSummary = memory.due_date ? ` due ${new Date(memory.due_date).toLocaleDateString()}` : " (no deadline)";
@@ -1491,8 +1838,11 @@ async function handleDoneIntent(
       return r;
     }
     await updateMemory(memory.id, { status: "done", completed_at: new Date().toISOString() });
+    await updateStreak(telegramId);
     const r = await getCelebrationMessage(telegramId, memory.description);
-    await sendMessage(chatId, r);
+    await sendMessageWithButtons(chatId, r, [
+      [{ text: "\u{21A9}\u{FE0F} Undo", callback_data: `undo_done:${memory.id}` }],
+    ]);
     return r;
   }
 
@@ -1517,8 +1867,11 @@ async function handleDoneIntent(
       status: "done",
       completed_at: new Date().toISOString(),
     });
+    await updateStreak(telegramId);
     const r = await getCelebrationMessage(telegramId, matches[0].description);
-    await sendMessage(chatId, r);
+    await sendMessageWithButtons(chatId, r, [
+      [{ text: "\u{21A9}\u{FE0F} Undo", callback_data: `undo_done:${matches[0].id}` }],
+    ]);
     return r;
   } else {
     const shown = matches.slice(0, 5);

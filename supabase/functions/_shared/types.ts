@@ -94,6 +94,9 @@ export interface DbUser {
   timezone: string;
   is_active: boolean;
   last_active_at: string;
+  current_streak: number;
+  longest_streak: number;
+  last_streak_date: string | null;
 }
 
 export interface DbMemory {

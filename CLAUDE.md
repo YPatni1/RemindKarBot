@@ -33,6 +33,7 @@ supabase/
     006_audit_tables.sql         # Archive tables + BEFORE DELETE triggers for buildathon data retention
     007_logging_improvements.sql  # bot_response, session_id, archived_conversation_logs, callback intents
     008_feedback.sql               # User feedback collection table
+    009_phase2_snooze_streaks.sql  # snooze_count on memories, streak fields on users
 ```
 
 ## Supported Intents
@@ -95,6 +96,13 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - Low-confidence gate: if `parsed.confidence < 0.6` on storage intents, appends "Not what you meant? Say delete/edit this" hint.
 - Voice note length guard: <1s rejected, >120s warned before processing.
 - Completion celebrations: `getCelebrationMessage` returns context-aware done messages (first of day, 5th task, all caught up). Used in both `handleDoneIntent` and `done:` callback.
+- Smart snooze: `snooze:` callback shows time-aware picker (morning/afternoon/evening/tomorrow based on local hour). `snz_do:` executes the snooze, increments `snooze_count`. After 3 snoozes, escalation message suggests done/delete/reschedule.
+- Undo done: `done:` callback shows "Undo" button. `undo_done:` reverts to pending within 30-second window (checked via `completed_at` timestamp).
+- Wrong? correction flow: `wrong:` shows fix options (type/date/description). `fix_type:` shows type picker. `set_type:` applies. `fix_date:` sets session to `awaiting_date`. `fix_desc:` sets session to `awaiting_description`, next text updates description.
+- Entity linking: after saving a memory, runs semantic search for related pending items. Shows up to 2 related items in confirmation message.
+- Browse by type/status: `/pending` includes filter buttons (Tasks, Notes, Events, Overdue). `filter:` callback filters list and edits message in place. `filter:all` returns to unfiltered view.
+- Streak tracking: `updateStreak` called on every done action. Compares `last_streak_date` to today/yesterday to continue or reset streak. `formatDigest` shows streak with personal best indicator. `DbUser` includes `current_streak`, `longest_streak`, `last_streak_date`.
+- `snooze_count` column on memories (migration 009). Tracks per-item snooze frequency.
 
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

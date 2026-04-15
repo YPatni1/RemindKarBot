@@ -89,6 +89,23 @@ export async function updateUserTimezone(
   if (error) throw error;
 }
 
+export async function updateUserStreak(
+  telegramId: number,
+  currentStreak: number,
+  longestStreak: number,
+  lastStreakDate: string,
+): Promise<void> {
+  const { error } = await supabase
+    .from("users")
+    .update({
+      current_streak: currentStreak,
+      longest_streak: longestStreak,
+      last_streak_date: lastStreakDate,
+    })
+    .eq("telegram_id", telegramId);
+  if (error) throw error;
+}
+
 export async function deleteUserData(telegramId: number): Promise<void> {
   // on delete cascade handles memories
   const { error } = await supabase
@@ -204,13 +221,35 @@ export async function semanticSearch(
   return (data ?? []) as DbMemory[];
 }
 
-export async function getPendingMemories(telegramId: number): Promise<DbMemory[]> {
+export async function getPendingMemories(
+  telegramId: number,
+  typeFilter?: string,
+): Promise<DbMemory[]> {
+  let query = supabase
+    .from("memories")
+    .select("*")
+    .eq("telegram_id", telegramId)
+    .eq("status", "pending");
+
+  if (typeFilter) {
+    query = query.eq("type", typeFilter);
+  }
+
+  const { data, error } = await query
+    .order("due_date", { ascending: true, nullsFirst: false });
+  if (error) throw error;
+  return (data ?? []) as DbMemory[];
+}
+
+export async function getOverdueMemories(telegramId: number): Promise<DbMemory[]> {
   const { data, error } = await supabase
     .from("memories")
     .select("*")
     .eq("telegram_id", telegramId)
     .eq("status", "pending")
-    .order("due_date", { ascending: true, nullsFirst: false });
+    .not("due_date", "is", null)
+    .lt("due_date", new Date().toISOString())
+    .order("due_date", { ascending: true });
   if (error) throw error;
   return (data ?? []) as DbMemory[];
 }

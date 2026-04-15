@@ -76,12 +76,14 @@ export function formatConfirmation(memory: DbMemory, tz = DEFAULT_TZ): {
         ],
         [
           { text: "\u{1F6AB} No reminder", callback_data: `quickdate:${memory.id}:noreminder` },
+          { text: "\u{2753} Wrong?", callback_data: `wrong:${memory.id}` },
         ],
       ]
     : [
         [
           { text: "\u{2705} Done", callback_data: `done:${memory.id}` },
           { text: "\u{1F5D1} Delete", callback_data: `delete:${memory.id}` },
+          { text: "\u{2753} Wrong?", callback_data: `wrong:${memory.id}` },
         ],
       ];
 
@@ -169,6 +171,8 @@ export function formatDigest(
   tomorrow: DbMemory[],
   somedayCount: number,
   tz = DEFAULT_TZ,
+  currentStreak = 0,
+  longestStreak = 0,
 ): string {
   const name = escapeHtml(firstName || "there");
   const lines: string[] = [`Good morning, ${name}!\n`];
@@ -200,6 +204,11 @@ export function formatDigest(
 
   if (somedayCount > 0) {
     lines.push(`\u{1F4AD} + ${somedayCount} items with no deadline`);
+  }
+
+  if (currentStreak > 0) {
+    lines.push("");
+    lines.push(`\u{1F525} <b>${currentStreak}-day streak!</b>${longestStreak > currentStreak ? ` (best: ${longestStreak})` : currentStreak >= longestStreak ? " \u{2014} personal best!" : ""}`);
   }
 
   if (overdue.length === 0 && today.length === 0 && tomorrow.length === 0 && somedayCount === 0) {

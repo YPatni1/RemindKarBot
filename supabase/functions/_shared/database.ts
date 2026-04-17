@@ -475,7 +475,7 @@ export async function createFeedback(feedback: {
 
 // ---- Referrals ----
 
-// Log a share event (pending referral) — idempotent
+// Ensure user has a referral_code set (idempotent, called on each /share)
 // referral_code is "ref_<referrer_telegram_id>"
 export async function createReferral(referrerId: number): Promise<void> {
   const referralCode = `ref_${referrerId}`;

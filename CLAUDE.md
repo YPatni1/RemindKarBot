@@ -6,7 +6,7 @@ Telegram bot (RemindKar) — personal AI memory and commitment tracker. Users se
 ## Stack
 - **Runtime:** Supabase Edge Functions (Deno/TypeScript)
 - **AI:** Gemini 2.5 Flash for NLU parsing, text-embedding-004 for vector embeddings (NOT 2.0 — deprecated)
-- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `feedback`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`)
+- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `feedback`, `referrals`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`)
 - **Cron:** pg_cron + pg_net (digest at 3:30 UTC, reminders every 5 min)
 - **Bot API:** Telegram Bot API via webhooks (NOT polling)
 

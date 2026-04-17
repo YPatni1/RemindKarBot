@@ -50,6 +50,8 @@
 ```
 Incoming Update
       │
+      ├── inline_query? ──► handleInlineQuery (returns invite card for /share)
+      │
       ├── callback_query? ──► handleCallback (done/delete/snooze/page navigation)
       │
       └── message
@@ -57,7 +59,7 @@ Incoming Update
             ├── Not consented? ──► Block (except /start, /help)
             │
             ├── /command? ──► handleCommand
-            │     (/start, /help, /status, /pending, /done, /delete, /feedback, /tz, /search)
+            │     (/start, /help, /pending, /done, /share, /feedback, /privacy, /delete)
             │
             ├── Voice message? ──► transcribeAudio() ──► text ──┐
             │                                                    │

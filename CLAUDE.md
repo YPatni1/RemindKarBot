@@ -109,5 +109,8 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - `BOT_HANDLE` constant in `_shared/constants.ts` — must match actual BotFather username for deep links to work.
 - Referral code format: `ref_<telegram_id>` (deterministic). Self-referral blocked in `convertReferral`. `users` gets `referral_code` (text unique) and `referred_by` (bigint FK). Migration 010.
 
+## Local Dev
+`.env` file at project root (gitignored) holds: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Use `source .env` before running curl commands locally.
+
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

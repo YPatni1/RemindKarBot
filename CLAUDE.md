@@ -19,7 +19,7 @@ supabase/
     send-digest/index.ts        # Cron: morning digest per user
     _shared/
       types.ts                  # TypeScript interfaces
-      constants.ts              # Shared constants (TZ_OFFSETS)
+      constants.ts              # Shared constants (TZ_OFFSETS, BOT_HANDLE)
       telegram.ts               # Telegram Bot API helpers
       database.ts               # Supabase client + CRUD + semantic search + sessions
       gemini.ts                 # Gemini REST API (parse + transcribe + embeddings)
@@ -35,6 +35,7 @@ supabase/
     008_feedback.sql               # User feedback collection table
     009_phase2_snooze_streaks.sql  # snooze_count on memories, streak fields on users
     010_referrals.sql              # referrals table + referral_code/referred_by on users
+    011_archive_schema_sync.sql    # Sync archive tables + triggers with columns from 003/007/009/010
 ```
 
 ## Supported Intents

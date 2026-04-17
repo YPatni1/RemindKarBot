@@ -29,24 +29,21 @@
 
 ## This Month — Make It Proactive
 
+- [x] **Related memories on save** (shipped batch 10)
+  After creating a memory, runs semantic search (embedding similarity > 0.75). Shows up to 2 related pending items in confirmation message.
+
+- [x] **Snooze intelligence** (shipped batch 10)
+  `snooze_count` column on memories. After 3 snoozes, escalation message suggests done/delete/reschedule. Smart snooze picker shows time-aware options based on local hour.
+
 - [ ] **Entity linking on save**
-  When user saves a memory mentioning a person/project, surface related items: "You also have 2 items about Chaitanya." Uses the existing `entities` JSONB column (already populated, currently unused). Simple query: `entities->'people' ? 'name'`.
+  Surface related items by person/project name using `entities` JSONB column: "You also have 2 items about Chaitanya." (Currently uses embedding similarity only — entity-based matching is the gap.)
 
 - [ ] **Smart digest**
   Upgrade morning digest from a flat list to an intelligent briefing:
   - Conflict detection: "You have 3 things at 5 PM tomorrow"
-  - Streak tracking: "5-day completion streak!"
+  - Streak tracking in digest: already shows streak, but no personal-best callout yet
   - Entity grouping: cluster tasks by person/project
   - Overdue escalation: items snoozed 3+ times get highlighted
-
-- [ ] **Snooze intelligence**
-  Track snooze count per memory. After 3 snoozes:
-  - Ask: "You've postponed this 3 times. Commit to a date, or drop it?"
-  - Add `snooze_count` column to memories table
-  - Surface chronic snoozes in digest
-
-- [ ] **Related memories on save**
-  After creating a memory, run semantic search against existing memories. If similarity > 0.7, show: "Related: Buy gift for Chaitanya's birthday (due tomorrow)". Helps users spot conflicts and duplicates before they happen.
 
 ---
 
@@ -95,6 +92,7 @@
 | Multi-model routing | One model for NLU (Gemini Flash), one for embeddings (text-embedding-004). Adding a third model adds latency and cost with no benefit. |
 | Full conversation memory (LLM context window) | Session table (last shown IDs) solves 95% of context needs. Storing full chat history for LLM context is expensive and unnecessary for a task bot. |
 | Multi-language UI | Bot already handles English/Hindi/Hinglish/Marathi input via Gemini. UI chrome (button labels, system messages) in English is fine for target users. |
+| DST-aware timezone offsets | `TZ_OFFSETS` is a static map — no DST handling. India (primary market) doesn't observe DST. US/UK/Europe users may see reminders 1hr off during DST transitions. Fix requires replacing manual offset math with `Intl.DateTimeFormat` — a bigger refactor. |
 
 ---
 

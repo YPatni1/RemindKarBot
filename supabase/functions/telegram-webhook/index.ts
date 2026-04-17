@@ -201,7 +201,7 @@ async function updateStreak(telegramId: number): Promise<void> {
     if (!user) return;
 
     const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const lastDate = (user as Record<string, unknown>).last_streak_date as string | null;
+    const lastDate = user.last_streak_date;
 
     if (lastDate === today) return; // Already counted today
 
@@ -209,12 +209,12 @@ async function updateStreak(telegramId: number): Promise<void> {
     let newStreak: number;
 
     if (lastDate === yesterday) {
-      newStreak = ((user as Record<string, unknown>).current_streak as number ?? 0) + 1;
+      newStreak = (user.current_streak ?? 0) + 1;
     } else {
       newStreak = 1; // streak broken or first day
     }
 
-    const longestStreak = Math.max(newStreak, (user as Record<string, unknown>).longest_streak as number ?? 0);
+    const longestStreak = Math.max(newStreak, user.longest_streak ?? 0);
 
     await updateUserStreak(telegramId, newStreak, longestStreak, today);
   } catch (err) {
@@ -1052,7 +1052,7 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
       // Increment snooze count
       const snzMemory = await getMemoryById(memoryId);
-      const snoozeCount = (snzMemory as Record<string, unknown>)?.snooze_count as number ?? 0;
+      const snoozeCount = snzMemory?.snooze_count ?? 0;
 
       await updateMemory(memoryId, {
         reminder_at: newReminder.toISOString(),

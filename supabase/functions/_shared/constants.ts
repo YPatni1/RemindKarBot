@@ -1,6 +1,6 @@
 // Telegram bot handle — used for constructing deep links in /share
 // Update this if the bot username changes
-export const BOT_HANDLE = "RemindKar_bot";
+export const BOT_HANDLE = "RemindKarBot";
 
 // Single source of truth for timezone offsets (hours from UTC)
 // Used by: index.ts, gemini.ts, database.ts

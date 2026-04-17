@@ -172,6 +172,8 @@ ILIKE fallback (text search)
 | is_active, last_active_at | bool / timestamptz | |
 | current_streak, longest_streak | integer | Completion streak tracking |
 | last_streak_date | date | Last date a task was completed |
+| referral_code | text | Unique, nullable. Format: `ref_<telegram_id>` |
+| referred_by | bigint | FK to users.telegram_id of their referrer |
 
 ### `memories`
 | Column | Type | Notes |
@@ -228,6 +230,17 @@ ILIKE fallback (text search)
 | feedback_text | text | Free-form user feedback |
 | created_at | timestamptz | |
 
+### `referrals`
+| Column | Type | Notes |
+|---|---|---|
+| id | uuid PK | |
+| referrer_id | bigint FK → users | Who shared the link |
+| referred_id | bigint FK → users | Who joined (null until converted) |
+| referral_code | text | `ref_<referrer_telegram_id>` |
+| status | text | `pending` (shared) / `converted` (joined) |
+| shared_at | timestamptz | When inline query fired |
+| converted_at | timestamptz | When new user hit /start with code |
+
 ### Audit Archive Tables
 | Table | Mirrors | Trigger | Notes |
 |---|---|---|---|
@@ -278,6 +291,7 @@ ILIKE fallback (text search)
 | **Wrong? correction** | "Wrong?" button on confirmations; lets user fix type, date, or description inline |
 | **Browse by type** | `/pending` shows filter buttons (Tasks/Notes/Events/Overdue); filters edit message in place |
 | **Streak tracking** | Tracks completion streaks per user; shown in daily digest with personal-best indicator |
+| **Viral sharing** | `/share` sends `switch_inline_query_chosen_chat` button → user picks friend → invite card sent with deep link → referral tracked on conversion |
 
 ---
 

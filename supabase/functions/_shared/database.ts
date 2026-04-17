@@ -473,6 +473,89 @@ export async function createFeedback(feedback: {
   if (error) throw error;
 }
 
+// ---- Referrals ----
+
+// Log a share event (pending referral) — idempotent
+// referral_code is "ref_<referrer_telegram_id>"
+export async function createReferral(referrerId: number): Promise<void> {
+  const referralCode = `ref_${referrerId}`;
+  // Ensure user has referral_code set
+  await supabase
+    .from("users")
+    .update({ referral_code: referralCode })
+    .eq("telegram_id", referrerId)
+    .is("referral_code", null);
+}
+
+// Convert a referral when a new user joins via deep link
+// referralCode is "ref_<referrer_telegram_id>" from /start payload
+// Returns the referrer's telegram_id if conversion succeeded, null otherwise
+export async function convertReferral(
+  referralCode: string,
+  referredId: number,
+): Promise<number | null> {
+  const match = referralCode.match(/^ref_(\d+)$/);
+  if (!match) return null;
+  const referrerId = parseInt(match[1], 10);
+
+  // Self-referral guard
+  if (referrerId === referredId) return null;
+
+  // Check referrer exists
+  const { data: referrer } = await supabase
+    .from("users")
+    .select("telegram_id")
+    .eq("telegram_id", referrerId)
+    .maybeSingle();
+  if (!referrer) return null;
+
+  // Ensure referrer has referral_code set
+  await supabase
+    .from("users")
+    .update({ referral_code: referralCode })
+    .eq("telegram_id", referrerId)
+    .is("referral_code", null);
+
+  // Record referred_by on new user
+  await supabase
+    .from("users")
+    .update({ referred_by: referrerId })
+    .eq("telegram_id", referredId)
+    .is("referred_by", null);
+
+  // Upsert referral row with conversion info
+  const { error } = await supabase.from("referrals").upsert(
+    {
+      referrer_id: referrerId,
+      referred_id: referredId,
+      referral_code: referralCode,
+      status: "converted",
+      converted_at: new Date().toISOString(),
+    },
+    { onConflict: "referrer_id,referred_id" },
+  );
+  if (error) {
+    console.error("convertReferral upsert failed:", error);
+    return null;
+  }
+
+  return referrerId;
+}
+
+// Get referral stats for a user (total conversions)
+export async function getReferralStats(
+  telegramId: number,
+): Promise<{ conversions: number }> {
+  const { count, error } = await supabase
+    .from("referrals")
+    .select("*", { count: "exact", head: true })
+    .eq("referrer_id", telegramId)
+    .eq("status", "converted");
+
+  if (error) return { conversions: 0 };
+  return { conversions: count ?? 0 };
+}
+
 // ---- Sessions ----
 
 export async function getSession(

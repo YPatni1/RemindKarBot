@@ -1,11 +1,12 @@
-import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, GeminiParsedResponse, DbMemory, ConversationMessage } from "../_shared/types.ts";
-import { TZ_OFFSETS } from "../_shared/constants.ts";
+import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, TelegramInlineQuery, GeminiParsedResponse, DbMemory, ConversationMessage, InlineQueryResultArticle } from "../_shared/types.ts";
+import { TZ_OFFSETS, BOT_HANDLE } from "../_shared/constants.ts";
 import {
   sendMessage,
   sendMessageWithButtons,
   editMessageText,
   editMessageWithButtons,
   answerCallbackQuery,
+  answerInlineQuery,
   downloadTelegramFile,
   escapeHtml,
 } from "../_shared/telegram.ts";
@@ -32,6 +33,9 @@ import {
   getSession,
   createConversationLog,
   createFeedback,
+  createReferral,
+  convertReferral,
+  getReferralStats,
 } from "../_shared/database.ts";
 import { parseMessage, transcribeAudio, generateEmbedding } from "../_shared/gemini.ts";
 import {
@@ -225,6 +229,12 @@ async function updateStreak(telegramId: number): Promise<void> {
 async function handleUpdate(update: TelegramUpdate): Promise<void> {
   const startMs = Date.now();
 
+  // Handle inline queries (from /share button — fires when user picks a chat)
+  if (update.inline_query) {
+    await handleInlineQuery(update.inline_query);
+    return;
+  }
+
   if (update.callback_query) {
     const telegramId = update.callback_query.from.id;
     const cbData = update.callback_query.data ?? "";
@@ -316,6 +326,49 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
 }
 
 // ============================================================
+// Inline query handler — fires when user picks a chat via /share button
+// ============================================================
+
+async function handleInlineQuery(query: TelegramInlineQuery): Promise<void> {
+  const telegramId = query.from.id;
+
+  // Only serve registered, consented users
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await answerInlineQuery(query.id, []);
+    return;
+  }
+
+  const referralCode = `ref_${telegramId}`;
+  const deepLink = `https://t.me/${BOT_HANDLE}?start=${referralCode}`;
+
+  // Log the share event (non-fatal)
+  try {
+    await createReferral(telegramId);
+  } catch (err) {
+    console.error("createReferral failed (non-fatal):", err);
+  }
+
+  const inviteCard: InlineQueryResultArticle = {
+    type: "article",
+    id: "share_remindkar",
+    title: "Invite to RemindKar",
+    description: "AI-powered task & reminder tracker — works right in Telegram",
+    input_message_content: {
+      message_text:
+        `Hey! I've been using <b>RemindKar</b> to track my tasks and reminders \u{2014} it works right here in Telegram.\n\n` +
+        `Just text it anything you want to remember and it handles the rest. Try it \u{1F447}`,
+      parse_mode: "HTML",
+    },
+    reply_markup: {
+      inline_keyboard: [[{ text: "\u{2728} Try RemindKar", url: deepLink }]],
+    },
+  };
+
+  await answerInlineQuery(query.id, [inviteCard]);
+}
+
+// ============================================================
 // Command handlers
 // ============================================================
 
@@ -347,6 +400,9 @@ async function handleCommand(message: TelegramMessage): Promise<void> {
     case "/feedback":
       await handleFeedbackCommand(message, args);
       break;
+    case "/share":
+      await handleShare(message);
+      break;
     default:
       await sendMessage(chatId, "Unknown command. Try /help to see what I can do.");
   }
@@ -358,7 +414,26 @@ async function handleStart(message: TelegramMessage): Promise<void> {
   const username = message.from?.username ?? null;
   const firstName = message.from?.first_name ?? null;
 
+  // Parse deep link payload: "/start ref_123456"
+  const payload = message.text?.split(" ")[1] ?? null;
+
   const user = await upsertUser(telegramId, username, firstName);
+
+  // Handle referral conversion — non-fatal, never blocks onboarding
+  if (payload?.startsWith("ref_") && !user.referred_by) {
+    try {
+      const referrerId = await convertReferral(payload, telegramId);
+      if (referrerId) {
+        const joinerName = escapeHtml(firstName || "Someone");
+        sendMessage(
+          referrerId,
+          `\u{1F389} <b>${joinerName}</b> just joined RemindKar using your invite link!`,
+        ).catch(() => {}); // Referrer may have blocked the bot — non-fatal
+      }
+    } catch (err) {
+      console.error("Referral conversion failed (non-fatal):", err);
+    }
+  }
 
   if (user.consent_given) {
     await sendMessage(
@@ -390,6 +465,7 @@ async function handleHelp(chatId: number): Promise<void> {
     "/start \u{2014} Set up or restart the bot\n" +
     "/pending \u{2014} Show all pending tasks\n" +
     "/done &lt;text&gt; \u{2014} Mark a task as done\n" +
+    "/share \u{2014} Invite friends to RemindKar\n" +
     "/feedback \u{2014} Share feedback with us\n" +
     "/privacy \u{2014} See privacy info\n" +
     "/delete \u{2014} Delete all your data\n" +
@@ -545,6 +621,47 @@ async function handleFeedbackCommand(message: TelegramMessage, args: string): Pr
       { text: "\u{1F4AC} General", callback_data: "feedback_general" },
     ]],
   );
+}
+
+async function handleShare(message: TelegramMessage): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first to set up RemindKar.");
+    return;
+  }
+
+  // Show referral stats if any conversions exist
+  let statsText = "";
+  try {
+    const stats = await getReferralStats(telegramId);
+    if (stats.conversions > 0) {
+      statsText = `\n\nYou've already brought in <b>${stats.conversions}</b> friend${stats.conversions > 1 ? "s" : ""}! \u{1F64F}`;
+    }
+  } catch {
+    // Non-fatal — skip stats line
+  }
+
+  const shareText =
+    `\u{1F4E8} <b>Share RemindKar</b>\n\n` +
+    `Tap the button below, pick a friend or group, and send them an invite card with your personal link.${statsText}`;
+
+  await sendMessageWithButtons(chatId, shareText, [
+    [
+      {
+        text: "\u{1F4E4} Share with a friend",
+        switch_inline_query_chosen_chat: {
+          query: "",
+          allow_user_chats: true,
+          allow_group_chats: true,
+          allow_channel_chats: false,
+          allow_bot_chats: false,
+        },
+      },
+    ],
+  ]);
 }
 
 // ============================================================

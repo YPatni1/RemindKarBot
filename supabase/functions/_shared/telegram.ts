@@ -1,4 +1,4 @@
-import { TelegramInlineKeyboardButton } from "./types.ts";
+import { TelegramInlineKeyboardButton, InlineQueryResultArticle } from "./types.ts";
 
 const BOT_TOKEN = Deno.env.get("TELEGRAM_BOT_TOKEN")!;
 const TELEGRAM_API = `https://api.telegram.org/bot${BOT_TOKEN}`;
@@ -131,4 +131,23 @@ export async function downloadTelegramFile(fileId: string): Promise<Uint8Array |
   }
   const buffer = await downloadRes.arrayBuffer();
   return new Uint8Array(buffer);
+}
+
+export async function answerInlineQuery(
+  inlineQueryId: string,
+  results: InlineQueryResultArticle[],
+): Promise<void> {
+  const res = await fetch(`${TELEGRAM_API}/answerInlineQuery`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      inline_query_id: inlineQueryId,
+      results,
+      cache_time: 0,
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    console.error(`answerInlineQuery failed: ${res.status} ${err}`);
+  }
 }

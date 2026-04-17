@@ -6,6 +6,7 @@ export interface TelegramUpdate {
   update_id: number;
   message?: TelegramMessage;
   callback_query?: TelegramCallbackQuery;
+  inline_query?: TelegramInlineQuery;
 }
 
 export interface TelegramMessage {
@@ -46,10 +47,38 @@ export interface TelegramCallbackQuery {
   data?: string;
 }
 
-export interface TelegramInlineKeyboardButton {
-  text: string;
-  callback_data: string;
+export interface TelegramInlineQuery {
+  id: string;
+  from: TelegramUser;
+  query: string;
+  offset: string;
 }
+
+export interface InlineQueryResultArticle {
+  type: "article";
+  id: string;
+  title: string;
+  description?: string;
+  input_message_content: {
+    message_text: string;
+    parse_mode?: string;
+  };
+  reply_markup?: {
+    inline_keyboard: Array<Array<{ text: string; url: string }>>;
+  };
+}
+
+export type TelegramInlineKeyboardButton =
+  | { text: string; callback_data: string }
+  | { text: string; url: string }
+  | { text: string; switch_inline_query_chosen_chat: {
+      query: string;
+      allow_user_chats: boolean;
+      allow_group_chats: boolean;
+      allow_channel_chats: boolean;
+      allow_bot_chats: boolean;
+    }
+  };
 
 // ============================================================
 // Gemini API types
@@ -97,6 +126,8 @@ export interface DbUser {
   current_streak: number;
   longest_streak: number;
   last_streak_date: string | null;
+  referral_code: string | null;
+  referred_by: number | null;
 }
 
 export interface DbMemory {

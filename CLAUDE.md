@@ -34,6 +34,7 @@ supabase/
     007_logging_improvements.sql  # bot_response, session_id, archived_conversation_logs, callback intents
     008_feedback.sql               # User feedback collection table
     009_phase2_snooze_streaks.sql  # snooze_count on memories, streak fields on users
+    010_referrals.sql              # referrals table + referral_code/referred_by on users
 ```
 
 ## Supported Intents
@@ -103,6 +104,10 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - Browse by type/status: `/pending` includes filter buttons (Tasks, Notes, Events, Overdue). `filter:` callback filters list and edits message in place. `filter:all` returns to unfiltered view.
 - Streak tracking: `updateStreak` called on every done action. Compares `last_streak_date` to today/yesterday to continue or reset streak. `formatDigest` shows streak with personal best indicator. `DbUser` includes `current_streak`, `longest_streak`, `last_streak_date`.
 - `snooze_count` column on memories (migration 009). Tracks per-item snooze frequency.
+- Inline mode: enabled via BotFather (`/setinline`). Bot handles `inline_query` updates in `handleUpdate` before `callback_query`. Non-consented users get empty results.
+- Referral tracking: `/share` sends `switch_inline_query_chosen_chat` button. Inline query handler logs share via `createReferral` and responds with invite card containing deep link. `/start ref_<telegram_id>` triggers `convertReferral` in `handleStart`. Referrer notified on conversion (non-fatal if blocked).
+- `BOT_HANDLE` constant in `_shared/constants.ts` — must match actual BotFather username for deep links to work.
+- Referral code format: `ref_<telegram_id>` (deterministic). Self-referral blocked in `convertReferral`. `users` gets `referral_code` (text unique) and `referred_by` (bigint FK). Migration 010.
 
 ## Testing
 Simulate Telegram webhooks with curl POST to the Edge Function URL. Use fake telegram_id (e.g., 999999999) for test users. Clean up test data after.

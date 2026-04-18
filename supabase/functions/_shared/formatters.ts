@@ -1,4 +1,4 @@
-import { DbMemory, TelegramInlineKeyboardButton } from "./types.ts";
+import { DbMemory, DbMemoryParticipant, TelegramInlineKeyboardButton } from "./types.ts";
 import { escapeHtml } from "./telegram.ts";
 
 const DEFAULT_TZ = "Asia/Kolkata";
@@ -145,6 +145,23 @@ export function formatPendingList(
   return { text: lines.join("\n"), buttons };
 }
 
+// ---- Received (delegated) tasks list ----
+
+export function formatReceivedTasks(
+  receivedTasks: { participant: DbMemoryParticipant; memory: DbMemory; senderName: string }[],
+  tz = DEFAULT_TZ,
+  startIndex = 1,
+): string[] {
+  if (receivedTasks.length === 0) return [];
+  const lines: string[] = ["\n\u{1F4E5} <b>Assigned to you:</b>"];
+  receivedTasks.forEach((r, i) => {
+    const emoji = TYPE_EMOJI[r.memory.type] || "\u{1F4CB}";
+    const due = r.memory.due_date ? ` \u{2014} due ${formatDate(r.memory.due_date, tz)}` : "";
+    lines.push(`${startIndex + i}. ${emoji} ${escapeHtml(r.memory.description)}${due} \u{2014} <i>from ${escapeHtml(r.senderName)}</i>`);
+  });
+  return lines;
+}
+
 // ---- Ambiguous date options ----
 
 export function formatAmbiguousDate(
@@ -173,6 +190,7 @@ export function formatDigest(
   tz = DEFAULT_TZ,
   currentStreak = 0,
   longestStreak = 0,
+  receivedTasks: { memory: DbMemory; senderName: string }[] = [],
 ): string {
   const name = escapeHtml(firstName || "there");
   const lines: string[] = [`Good morning, ${name}!\n`];
@@ -206,12 +224,21 @@ export function formatDigest(
     lines.push(`\u{1F4AD} + ${somedayCount} items with no deadline`);
   }
 
+  if (receivedTasks.length > 0) {
+    lines.push("\n\u{1F4E5} <b>ASSIGNED TO YOU:</b>");
+    receivedTasks.forEach((r) => {
+      const emoji = TYPE_EMOJI[r.memory.type] || "\u{1F4CB}";
+      const due = r.memory.due_date ? ` (due ${formatDateShort(r.memory.due_date, tz)})` : "";
+      lines.push(`  \u{2022} ${emoji} ${escapeHtml(r.memory.description)}${due} \u{2014} <i>from ${escapeHtml(r.senderName)}</i>`);
+    });
+  }
+
   if (currentStreak > 0) {
     lines.push("");
     lines.push(`\u{1F525} <b>${currentStreak}-day streak!</b>${longestStreak > currentStreak ? ` (best: ${longestStreak})` : currentStreak >= longestStreak ? " \u{2014} personal best!" : ""}`);
   }
 
-  if (overdue.length === 0 && today.length === 0 && tomorrow.length === 0 && somedayCount === 0) {
+  if (overdue.length === 0 && today.length === 0 && tomorrow.length === 0 && somedayCount === 0 && receivedTasks.length === 0) {
     return "";
   }
 

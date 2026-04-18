@@ -1,4 +1,4 @@
-import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, TelegramInlineQuery, GeminiParsedResponse, DbMemory, ConversationMessage, InlineQueryResultArticle } from "../_shared/types.ts";
+import { TelegramUpdate, TelegramMessage, TelegramCallbackQuery, TelegramInlineQuery, TelegramInlineKeyboardButton, GeminiParsedResponse, DbMemory, DbContact, DbMemoryParticipant, ConversationMessage, InlineQueryResultArticle } from "../_shared/types.ts";
 import { TZ_OFFSETS, BOT_HANDLE } from "../_shared/constants.ts";
 import {
   sendMessage,
@@ -36,12 +36,29 @@ import {
   createReferral,
   convertReferral,
   getReferralStats,
+  getContactByNickname,
+  getContactById,
+  getContactsByOwner,
+  createContact,
+  updateContact,
+  createParticipant,
+  updateParticipant,
+  activateParticipantsForContact,
+  declineParticipantsFromSender,
+  getReceivedTasks,
+  getApprovedSenders,
+  getBlockedSenders,
+  blockSender,
+  unblockSender,
+  getAssignedByUser,
+  getParticipant,
 } from "../_shared/database.ts";
 import { parseMessage, transcribeAudio, generateEmbedding } from "../_shared/gemini.ts";
 import {
   formatConfirmation,
   formatQueryResults,
   formatPendingList,
+  formatReceivedTasks,
   formatAmbiguousDate,
   formatDoneOptions,
   formatDeleteOptions,
@@ -280,6 +297,11 @@ async function handleUpdate(update: TelegramUpdate): Promise<void> {
     return;
   }
 
+  if (message.contact) {
+    await handleContactShare(message, startMs);
+    return;
+  }
+
   if (userText.startsWith("/")) {
     try {
       await handleCommand(message);
@@ -403,6 +425,18 @@ async function handleCommand(message: TelegramMessage): Promise<void> {
     case "/share":
       await handleShare(message);
       break;
+    case "/contacts":
+      await handleContacts(message);
+      break;
+    case "/block":
+      await handleBlock(message);
+      break;
+    case "/unblock":
+      await handleUnblock(message);
+      break;
+    case "/assigned":
+      await handleAssigned(message);
+      break;
     default:
       await sendMessage(chatId, "Unknown command. Try /help to see what I can do.");
   }
@@ -432,6 +466,28 @@ async function handleStart(message: TelegramMessage): Promise<void> {
       }
     } catch (err) {
       console.error("Referral conversion failed (non-fatal):", err);
+    }
+  }
+
+  // Handle invite deep link: /start invite_<contact_id>
+  if (payload?.startsWith("invite_")) {
+    try {
+      const contactId = payload.slice(7);
+      const contact = await getContactById(contactId);
+      if (contact && (!contact.contact_telegram_id || contact.contact_telegram_id === telegramId)) {
+        // Update contact with confirmed telegram_id and approved status
+        await updateContact(contactId, { status: "approved", contact_telegram_id: telegramId });
+        // Activate all queued tasks from this sender
+        const activated = await activateParticipantsForContact(contact.owner_telegram_id, telegramId, "pending_invite");
+        // Notify sender (non-fatal)
+        const joinerName = escapeHtml(firstName || "Someone");
+        sendMessage(
+          contact.owner_telegram_id,
+          `\u{1F389} ${joinerName} joined RemindKar! ${activated.length > 0 ? `Your ${activated.length} task${activated.length > 1 ? "s have" : " has"} been delivered.` : ""}`,
+        ).catch(() => {});
+      }
+    } catch (err) {
+      console.error("Invite conversion failed (non-fatal):", err);
     }
   }
 
@@ -469,6 +525,10 @@ async function handleHelp(chatId: number): Promise<void> {
     "/feedback \u{2014} Share feedback with us\n" +
     "/privacy \u{2014} See privacy info\n" +
     "/delete \u{2014} Delete all your data\n" +
+    "/contacts \u{2014} See your linked contacts\n" +
+    "/block \u{2014} Block someone from assigning tasks\n" +
+    "/unblock \u{2014} Unblock a blocked sender\n" +
+    "/assigned \u{2014} See tasks you've assigned to others\n" +
     "/help \u{2014} Show this message\n\n" +
     "<b>Just send me:</b>\n" +
     '\u{2022} A task: "Call Aman tomorrow at 5 PM"\n' +
@@ -562,6 +622,30 @@ async function handlePending(message: TelegramMessage): Promise<void> {
     const memories = await getPendingMemories(telegramId);
     await saveSession(telegramId, memories.map((m) => m.id), "pending");
     const { text, buttons } = formatPendingList(memories, user.timezone);
+
+    // Fetch received (delegated) tasks
+    let receivedText = "";
+    try {
+      const receivedRaw = await getReceivedTasks(telegramId);
+      if (receivedRaw.length > 0) {
+        const receivedItems: { participant: DbMemoryParticipant; memory: DbMemory; senderName: string }[] = [];
+        for (const r of receivedRaw) {
+          const senderUser = await getUser(r.memory.telegram_id);
+          receivedItems.push({
+            participant: r,
+            memory: r.memory,
+            senderName: senderUser?.first_name || "Someone",
+          });
+        }
+        const receivedLines = formatReceivedTasks(receivedItems, user.timezone, memories.length + 1);
+        receivedText = receivedLines.join("\n");
+      }
+    } catch (err) {
+      console.error("getReceivedTasks error (non-fatal):", err);
+    }
+
+    const fullText = receivedText ? text + receivedText : text;
+
     // Add filter row
     const filterRow: TelegramInlineKeyboardButton[] = [
       { text: "\u{1F4CB} Tasks", callback_data: "filter:task" },
@@ -570,7 +654,7 @@ async function handlePending(message: TelegramMessage): Promise<void> {
       { text: "\u{1F6A8} Overdue", callback_data: "filter:overdue" },
     ];
     const allButtons = [...buttons, filterRow];
-    await sendMessageWithButtons(chatId, text, allButtons);
+    await sendMessageWithButtons(chatId, fullText, allButtons);
   } catch (error) {
     console.error("Pending error:", error);
     await sendMessage(chatId, "Something went wrong. Please try again.");
@@ -665,6 +749,175 @@ async function handleShare(message: TelegramMessage): Promise<void> {
 }
 
 // ============================================================
+// /contacts — list linked contacts
+// ============================================================
+
+async function handleContacts(message: TelegramMessage): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first to set up RemindKar.");
+    return;
+  }
+
+  try {
+    const contacts = await getContactsByOwner(telegramId);
+    if (contacts.length === 0) {
+      await sendMessage(chatId, "You have no linked contacts yet.\n\nTo add a contact, share their Telegram contact card with me.");
+      return;
+    }
+
+    const statusEmoji: Record<string, string> = {
+      approved: "\u{2705}",
+      pending: "\u{23F3}",
+      blocked: "\u{1F6AB}",
+      declined: "\u{274C}",
+    };
+
+    const lines = ["<b>Your contacts:</b>\n"];
+    contacts.forEach((c, i) => {
+      const emoji = statusEmoji[c.status] || "\u{2753}";
+      const name = escapeHtml(c.first_name || c.nickname);
+      lines.push(`${i + 1}. ${emoji} ${name} (${c.status})`);
+    });
+
+    await sendMessage(chatId, lines.join("\n"));
+  } catch (error) {
+    console.error("Contacts error:", error);
+    await sendMessage(chatId, "Something went wrong. Please try again.");
+  }
+}
+
+// ============================================================
+// /block — block a sender from assigning tasks
+// ============================================================
+
+async function handleBlock(message: TelegramMessage): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first to set up RemindKar.");
+    return;
+  }
+
+  try {
+    const senders = await getApprovedSenders(telegramId);
+    if (senders.length === 0) {
+      await sendMessage(chatId, "No one is sending you tasks right now.");
+      return;
+    }
+
+    const buttons: TelegramInlineKeyboardButton[][] = [];
+    for (const s of senders) {
+      const senderUser = await getUser(s.owner_telegram_id);
+      const senderName = senderUser?.first_name || `User ${s.owner_telegram_id}`;
+      buttons.push([{
+        text: `\u{1F6AB} ${senderName}`,
+        callback_data: `block_sender:${s.owner_telegram_id}`,
+      }]);
+    }
+
+    await sendMessageWithButtons(chatId, "Who would you like to block from sending you tasks?", buttons);
+  } catch (error) {
+    console.error("Block error:", error);
+    await sendMessage(chatId, "Something went wrong. Please try again.");
+  }
+}
+
+// ============================================================
+// /unblock — unblock a blocked sender
+// ============================================================
+
+async function handleUnblock(message: TelegramMessage): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first to set up RemindKar.");
+    return;
+  }
+
+  try {
+    const blocked = await getBlockedSenders(telegramId);
+    if (blocked.length === 0) {
+      await sendMessage(chatId, "You haven't blocked anyone.");
+      return;
+    }
+
+    const buttons: TelegramInlineKeyboardButton[][] = [];
+    for (const b of blocked) {
+      const blockedUser = await getUser(b.owner_telegram_id);
+      const blockedName = blockedUser?.first_name || `User ${b.owner_telegram_id}`;
+      buttons.push([{
+        text: `\u{2705} ${blockedName}`,
+        callback_data: `unblock_sender:${b.owner_telegram_id}`,
+      }]);
+    }
+
+    await sendMessageWithButtons(chatId, "Who would you like to unblock?", buttons);
+  } catch (error) {
+    console.error("Unblock error:", error);
+    await sendMessage(chatId, "Something went wrong. Please try again.");
+  }
+}
+
+// ============================================================
+// /assigned — tasks you've assigned to others
+// ============================================================
+
+async function handleAssigned(message: TelegramMessage): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first to set up RemindKar.");
+    return;
+  }
+
+  try {
+    const assigned = await getAssignedByUser(telegramId);
+    if (assigned.length === 0) {
+      await sendMessage(chatId, "You haven't assigned any tasks to others yet.\n\nTo assign a task, share a contact card with me and then mention their name in a task.");
+      return;
+    }
+
+    const statusEmoji: Record<string, string> = {
+      active: "\u{23F3}",
+      done: "\u{2705}",
+      pending_consent: "\u{1F4E8}",
+      pending_invite: "\u{1F4E8}",
+      declined: "\u{274C}",
+    };
+
+    const lines = ["<b>Tasks you've assigned:</b>\n"];
+    for (const a of assigned) {
+      const emoji = statusEmoji[a.status] || "\u{2753}";
+      const assigneeUser = await getUser(a.participant_telegram_id);
+      const assigneeName = assigneeUser?.first_name || `User ${a.participant_telegram_id}`;
+      const due = a.memory.due_date
+        ? ` \u{2014} due ${new Date(a.memory.due_date).toLocaleString("en-IN", {
+            day: "numeric",
+            month: "short",
+            timeZone: user.timezone,
+          })}`
+        : "";
+      lines.push(`${emoji} ${escapeHtml(a.memory.description)}${due} \u{2192} <i>${escapeHtml(assigneeName)}</i> (${a.status})`);
+    }
+
+    await sendMessage(chatId, lines.join("\n"));
+  } catch (error) {
+    console.error("Assigned error:", error);
+    await sendMessage(chatId, "Something went wrong. Please try again.");
+  }
+}
+
+// ============================================================
 // Callback query handler
 // ============================================================
 
@@ -730,6 +983,137 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
       return;
     }
 
+    // Delegation consent: recipient allows a sender to assign tasks
+    if (data.startsWith("consent_allow:")) {
+      const contactId = data.slice("consent_allow:".length);
+      try {
+        const contact = await getContactById(contactId);
+        if (!contact) {
+          await answerCallbackQuery(query.id, "Contact not found.");
+          return;
+        }
+        await updateContact(contactId, { status: "approved" });
+        const senderUser = await getUser(contact.owner_telegram_id);
+        const senderName = escapeHtml(senderUser?.first_name || "They");
+
+        await answerCallbackQuery(query.id, "Allowed!");
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, `\u{2705} You've allowed ${senderName} to send you tasks.`);
+        }
+
+        // Activate queued tasks
+        const activated = await activateParticipantsForContact(contact.owner_telegram_id, telegramId, "pending_consent");
+        if (activated.length > 0 && chatId) {
+          await sendMessage(chatId, `\u{1F4E5} ${activated.length} task${activated.length > 1 ? "s" : ""} from ${senderName} just landed!`);
+        }
+
+        // Notify sender (non-fatal)
+        try {
+          const recipientName = escapeHtml(query.from.first_name || "Your contact");
+          await sendMessage(contact.owner_telegram_id, `\u{2705} ${recipientName} accepted your task connection! You can now assign tasks to them.`);
+        } catch {
+          // Sender may have blocked the bot
+        }
+      } catch (err) {
+        console.error("consent_allow error:", err);
+        await answerCallbackQuery(query.id, "Something went wrong.");
+      }
+      return;
+    }
+
+    // Delegation consent: recipient declines
+    if (data.startsWith("consent_decline:")) {
+      const contactId = data.slice("consent_decline:".length);
+      try {
+        const contact = await getContactById(contactId);
+        if (!contact) {
+          await answerCallbackQuery(query.id, "Contact not found.");
+          return;
+        }
+        await updateContact(contactId, { status: "declined" });
+
+        await answerCallbackQuery(query.id, "Declined.");
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, "Got it \u{2014} they won't be able to send you tasks.");
+        }
+
+        // Decline queued tasks
+        await declineParticipantsFromSender(contact.owner_telegram_id, telegramId);
+
+        // Notify sender with generic message (non-fatal)
+        try {
+          await sendMessage(contact.owner_telegram_id, `Your task connection request wasn't accepted. You can try again later.`);
+        } catch {
+          // Sender may have blocked the bot
+        }
+      } catch (err) {
+        console.error("consent_decline error:", err);
+        await answerCallbackQuery(query.id, "Something went wrong.");
+      }
+      return;
+    }
+
+    // Block sender callback
+    if (data.startsWith("block_sender:")) {
+      const senderTgId = parseInt(data.slice("block_sender:".length), 10);
+      await blockSender(senderTgId, telegramId);
+      await declineParticipantsFromSender(senderTgId, telegramId);
+      await answerCallbackQuery(query.id, "Blocked!");
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, "\u{1F6AB} Blocked. They won't be able to send you tasks anymore.");
+      }
+      return;
+    }
+
+    // Unblock sender callback
+    if (data.startsWith("unblock_sender:")) {
+      const senderTgId = parseInt(data.slice("unblock_sender:".length), 10);
+      await unblockSender(senderTgId, telegramId);
+      await answerCallbackQuery(query.id, "Unblocked!");
+      if (chatId && messageId) {
+        await editMessageText(chatId, messageId, "\u{2705} Unblocked. They can send you tasks again.");
+      }
+      return;
+    }
+
+    // Contact disambiguation picker
+    if (data.startsWith("pick_contact:")) {
+      const contactId = data.slice("pick_contact:".length);
+      try {
+        await answerCallbackQuery(query.id, "Selected!");
+        const contact = await getContactById(contactId);
+        if (!contact) {
+          if (chatId && messageId) {
+            await editMessageText(chatId, messageId, "Contact not found.");
+          }
+          return;
+        }
+
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, `\u{2705} Selected: ${escapeHtml(contact.first_name || contact.nickname)}`);
+        }
+
+        // Check session for original message
+        const pickSession = await getSession(telegramId);
+        if (pickSession?.last_intent?.startsWith("awaiting_contact_pick:")) {
+          const originalMessage = pickSession.last_intent.slice("awaiting_contact_pick:".length);
+          if (originalMessage && chatId) {
+            const pickUser = await getUser(telegramId);
+            if (pickUser) {
+              const parsedItems = await parseMessage(originalMessage, pickSession.conversation_history ?? [], pickUser.timezone);
+              for (const parsed of parsedItems) {
+                await routeParsedIntent(chatId, telegramId, pickUser.id, originalMessage, parsed, "text", pickUser.timezone);
+              }
+            }
+          }
+        }
+      } catch (err) {
+        console.error("pick_contact error:", err);
+        await answerCallbackQuery(query.id, "Something went wrong.");
+      }
+      return;
+    }
+
     // Timezone selection
     if (data.startsWith("tz:")) {
       const timezone = data.slice(3);
@@ -748,6 +1132,13 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
         const digestAmPm = digestHr >= 12 ? "PM" : "AM";
         const digestHr12 = digestHr === 0 ? 12 : digestHr > 12 ? digestHr - 12 : digestHr;
         const digestTimeStr = digestMin > 0 ? `${digestHr12}:${String(digestMin).padStart(2, "0")} ${digestAmPm}` : `${digestHr12} ${digestAmPm}`;
+
+        const notifNudgeText =
+          `\u{1F514} <b>One quick thing</b> \u{2014} make sure notifications are ON for this chat so you don't miss reminders!\n\n` +
+          `\u{1F4F1} <b>iPhone:</b> Tap the bot name at the top \u{2192} Notifications \u{2192} Enable\n` +
+          `\u{1F4F1} <b>Android:</b> Tap the bot name at the top \u{2192} Enable Notifications`;
+
+        await sendMessage(chatId, notifNudgeText);
 
         const onboardingText =
           `Perfect! Every morning at ${digestTimeStr} I'll send you a summary of your day.\n\n` +
@@ -907,6 +1298,32 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
     if (data.startsWith("done:")) {
       const memoryId = data.slice(5);
       const doneMemory = await getMemoryById(memoryId);
+
+      // Check if this is a received (shared) task
+      const doneParticipant = await getParticipant(memoryId, telegramId);
+      if (doneParticipant && doneParticipant.role === "assignee") {
+        // Mark participant as done (not the memory itself)
+        await updateParticipant(doneParticipant.id, {
+          status: "done",
+          completed_at: new Date().toISOString(),
+        });
+        await answerCallbackQuery(query.id, "Marked as done!");
+        if (chatId && messageId) {
+          const doneDesc = doneMemory ? escapeHtml(doneMemory.description) : "Task";
+          await editMessageText(chatId, messageId, `\u{2705} Done: ${doneDesc}`);
+        }
+        // Notify creator
+        if (doneMemory) {
+          try {
+            const recipientUser = await getUser(telegramId);
+            const recipientName = escapeHtml(recipientUser?.first_name || "Someone");
+            await sendMessage(doneMemory.telegram_id,
+              `\u{2705} ${recipientName} completed: <b>${escapeHtml(doneMemory.description)}</b>`);
+          } catch { /* non-fatal */ }
+        }
+        return;
+      }
+
       await updateMemory(memoryId, {
         status: "done",
         completed_at: new Date().toISOString(),
@@ -1160,6 +1577,18 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
 
     if (data.startsWith("delete:")) {
       const memoryId = data.slice(7);
+
+      // Check if this is a received task — dismiss participant, don't delete memory
+      const delParticipant = await getParticipant(memoryId, telegramId);
+      if (delParticipant && delParticipant.role === "assignee") {
+        await updateParticipant(delParticipant.id, { status: "declined" });
+        await answerCallbackQuery(query.id, "Dismissed!");
+        if (chatId && messageId) {
+          await editMessageText(chatId, messageId, "\u{1F5D1} Dismissed.");
+        }
+        return;
+      }
+
       await deleteMemory(memoryId);
       await answerCallbackQuery(query.id, "Deleted!");
       if (chatId && messageId) {
@@ -1288,6 +1717,158 @@ async function handleCallbackQuery(query: TelegramCallbackQuery): Promise<void> 
   } catch (error) {
     console.error("Callback query error:", error);
     await answerCallbackQuery(query.id, "Something went wrong.");
+  }
+}
+
+// ============================================================
+// Contact share handler
+// ============================================================
+
+async function handleContactShare(message: TelegramMessage, startMs = Date.now()): Promise<void> {
+  const chatId = message.chat.id;
+  const telegramId = message.from!.id;
+  const contact = message.contact!;
+
+  const user = await getUser(telegramId);
+  if (!user?.consent_given) {
+    await sendMessage(chatId, "Please send /start first and give consent before I can save your memories.");
+    return;
+  }
+
+  const session = await getSession(telegramId);
+  const sessionId = session?.session_id ?? crypto.randomUUID();
+
+  try {
+    const contactPhone = contact.phone_number;
+    const contactTelegramId = contact.user_id ?? null;
+    const contactFirstName = contact.first_name;
+    const contactLastName = contact.last_name ?? "";
+    const contactFullName = contactLastName ? `${contactFirstName} ${contactLastName}` : contactFirstName;
+
+    // Check if contact already exists (by phone) in sender's contacts
+    const existingContacts = await getContactsByOwner(telegramId);
+    let dbContact: DbContact | null = existingContacts.find((c) => c.contact_phone === contactPhone) ?? null;
+
+    if (dbContact) {
+      // Update telegram_id if missing
+      if (!dbContact.contact_telegram_id && contactTelegramId) {
+        await updateContact(dbContact.id, { contact_telegram_id: contactTelegramId });
+        dbContact = { ...dbContact, contact_telegram_id: contactTelegramId };
+      }
+    } else {
+      // Create new contact
+      dbContact = await createContact({
+        owner_telegram_id: telegramId,
+        contact_telegram_id: contactTelegramId,
+        contact_phone: contactPhone,
+        nickname: contactFirstName.toLowerCase(),
+        first_name: contactFullName,
+        status: "pending",
+      });
+    }
+
+    // Check if shared contact is on RemindKar
+    const contactUser = contactTelegramId ? await getUser(contactTelegramId) : null;
+    const senderName = escapeHtml(user.first_name || "Someone");
+
+    if (contactUser && dbContact.status === "pending") {
+      // Contact is on RemindKar — send consent request to contact
+      await sendMessageWithButtons(contactTelegramId!, `${senderName} wants to send you tasks and reminders. Allow?`, [
+        [
+          { text: "\u{2705} Allow", callback_data: `consent_allow:${dbContact.id}` },
+          { text: "\u{274C} Decline", callback_data: `consent_decline:${dbContact.id}` },
+        ],
+      ]);
+      await sendMessage(chatId, `\u{1F4E8} I've asked <b>${escapeHtml(contactFullName)}</b> for permission. I'll let you know when they respond.`);
+    } else if (contactTelegramId && !contactUser) {
+      // Contact has telegram_id but is NOT on RemindKar — send invite
+      const inviteUrl = `https://t.me/${BOT_HANDLE}?start=invite_${dbContact.id}`;
+      await sendMessageWithButtons(chatId,
+        `<b>${escapeHtml(contactFullName)}</b> isn't on RemindKar yet. Send them an invite?`, [
+        [{ text: "\u{2728} Send invite", url: inviteUrl }],
+      ]);
+    } else if (!contactTelegramId) {
+      // No telegram_id — can't reach them
+      await sendMessage(chatId, `I can only reach Telegram users for now. <b>${escapeHtml(contactFullName)}</b> doesn't have a Telegram account linked to this contact.`);
+    } else if (dbContact.status === "approved") {
+      await sendMessage(chatId, `\u{2705} <b>${escapeHtml(contactFullName)}</b> is already connected! You can assign tasks to them by name.`);
+    } else if (dbContact.status === "declined" || dbContact.status === "blocked") {
+      await sendMessage(chatId, `<b>${escapeHtml(contactFullName)}</b> is not accepting tasks right now.`);
+    }
+
+    // If session had awaiting_contact:<memoryId>:<names>, link this contact as participant
+    if (session?.last_intent?.startsWith("awaiting_contact:")) {
+      const parts = session.last_intent.slice("awaiting_contact:".length).split(":");
+      const memoryId = parts[0];
+      const remainingNames = parts[1] ? parts[1].split(",") : [];
+
+      if (memoryId && dbContact) {
+        const participantStatus = dbContact.status === "approved" ? "active"
+          : (dbContact.contact_telegram_id ? "pending_consent" : "pending_invite");
+
+        try {
+          await createParticipant({
+            memory_id: memoryId,
+            participant_telegram_id: dbContact.contact_telegram_id || 0,
+            role: "assignee",
+            status: participantStatus,
+          });
+
+          // Notify active recipients immediately
+          if (participantStatus === "active" && dbContact.contact_telegram_id) {
+            const memory = await getMemoryById(memoryId);
+            if (memory) {
+              sendMessage(
+                dbContact.contact_telegram_id,
+                `\u{1F4E5} ${senderName} assigned you: <b>${escapeHtml(memory.description)}</b>`,
+              ).catch(() => {});
+            }
+          }
+        } catch (err) {
+          console.error("Participant creation from contact share failed (non-fatal):", err);
+        }
+
+        // Check if more unknown names remain
+        const matchedName = remainingNames.find(
+          (n) => n.toLowerCase() === contactFirstName.toLowerCase() || contactFullName.toLowerCase().includes(n.toLowerCase()),
+        );
+        const stillUnknown = remainingNames.filter((n) => n !== matchedName);
+
+        if (stillUnknown.length > 0) {
+          // More contacts to link — keep prompting
+          const unknownNames = stillUnknown.join(",");
+          await saveSession(telegramId, session.last_shown_ids ?? [], `awaiting_contact:${memoryId}:${unknownNames}`);
+          const namesList = stillUnknown.map((n) => `<b>${escapeHtml(n)}</b>`).join(", ");
+          await sendMessage(chatId, `Now share a contact for ${namesList}.`);
+        } else {
+          // All contacts linked — clear the awaiting state
+          await saveSession(telegramId, session.last_shown_ids ?? [], "created");
+        }
+      }
+    }
+
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: `[contact_share] ${contactFullName}`,
+      message_type: "contact",
+      primary_intent: "contact_share",
+      bot_action: `contact_${dbContact.status === "pending" ? "consent_requested" : dbContact.status}`,
+      session_id: sessionId,
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user.timezone,
+    });
+  } catch (error) {
+    console.error("Contact share error:", error);
+    await sendMessage(chatId, "Something went wrong processing that contact. Please try again.");
+    await logInteraction({
+      telegram_id: telegramId,
+      user_message: `[contact_share]`,
+      message_type: "contact",
+      error: String(error),
+      session_id: sessionId,
+      processing_time_ms: Date.now() - startMs,
+      user_timezone: user?.timezone ?? "Asia/Kolkata",
+    });
   }
 }
 
@@ -1679,6 +2260,51 @@ async function handleForward(message: TelegramMessage, startMs = Date.now()): Pr
 }
 
 // ============================================================
+// Resolve target people names to contacts
+// ============================================================
+
+async function resolveTargetPeople(
+  ownerTelegramId: number,
+  targetPeople: string[],
+  ownerFirstName: string | null,
+): Promise<{
+  resolved: DbContact[];
+  ambiguous: { name: string; matches: DbContact[] }[];
+  unknown: string[];
+}> {
+  const resolved: DbContact[] = [];
+  const ambiguous: { name: string; matches: DbContact[] }[] = [];
+  const unknown: string[] = [];
+
+  for (const name of targetPeople) {
+    // Skip self-assignment
+    if (ownerFirstName && name.toLowerCase() === ownerFirstName.toLowerCase()) {
+      continue;
+    }
+
+    const matches = await getContactByNickname(ownerTelegramId, name);
+    // Filter out blocked/declined
+    const activeMatches = matches.filter((c) => c.status !== "blocked" && c.status !== "declined");
+
+    if (activeMatches.length === 1) {
+      resolved.push(activeMatches[0]);
+    } else if (activeMatches.length > 1) {
+      ambiguous.push({ name, matches: activeMatches });
+    } else {
+      // Check if any were blocked/declined
+      const blockedOrDeclined = matches.filter((c) => c.status === "blocked" || c.status === "declined");
+      if (blockedOrDeclined.length > 0) {
+        unknown.push(`${name} (not accepting)`);
+      } else {
+        unknown.push(name);
+      }
+    }
+  }
+
+  return { resolved, ambiguous, unknown };
+}
+
+// ============================================================
 // Shared: route parsed intent to storage or query
 // Returns a brief summary of what was done (for conversation history)
 // ============================================================
@@ -1780,6 +2406,133 @@ async function routeParsedIntent(
         embedding = await generateEmbedding(parsed.description);
       } catch (err) {
         console.error("Embedding generation failed (non-fatal):", err);
+      }
+
+      // Shared task path: delegate to target people
+      if (parsed.target_people && parsed.target_people.length > 0) {
+        const ownerUser = await getUser(telegramId);
+        const ownerFirstName = ownerUser?.first_name ?? null;
+        const { resolved, ambiguous, unknown } = await resolveTargetPeople(telegramId, parsed.target_people, ownerFirstName);
+
+        // Handle ambiguous (multiple matches for same name) — show picker
+        // Ambiguous blocks task creation because we don't know which contact to use
+        if (ambiguous.length > 0) {
+          const first = ambiguous[0];
+          const pickerButtons = first.matches.map((c) => [
+            { text: `${escapeHtml(c.first_name || c.nickname)} (${c.contact_phone})`, callback_data: `pick_contact:${c.id}` },
+          ]);
+          const pickerText = `Multiple contacts match "${escapeHtml(first.name)}". Which one?`;
+          await sendMessageWithButtons(chatId, pickerText, pickerButtons);
+          await saveSession(telegramId, [], `awaiting_contact_pick:${rawInput}`);
+          return { summary: `Ambiguous contact: ${first.name}`, response: pickerText };
+        }
+
+        // If ALL contacts are blocked/declined and none resolved, abort
+        const notAccepting = unknown.filter((n) => n.endsWith("(not accepting)"));
+        const trueUnknown = unknown.filter((n) => !n.endsWith("(not accepting)"));
+        if (notAccepting.length > 0 && trueUnknown.length === 0 && resolved.length === 0) {
+          const names = notAccepting.map((n) => n.replace(" (not accepting)", "")).join(", ");
+          const responseText = `<b>${escapeHtml(names)}</b> is not accepting tasks right now.`;
+          await sendMessage(chatId, responseText);
+          return { summary: `Contact declined: ${names}`, response: responseText };
+        }
+
+        // Always create the memory — even if some contacts are unknown.
+        // The creator's task should never be lost.
+        const memory = await createMemory({
+          user_id: userId,
+          telegram_id: telegramId,
+          type: parsed.intent,
+          description: parsed.description,
+          raw_input: rawInput,
+          due_date: parsed.due_date,
+          reminder_at: parsed.reminder_at,
+          entities: parsed.entities,
+          recurrence: parsed.recurrence,
+          source,
+          is_shared: true,
+          description_embedding: embedding,
+        });
+
+        // Add creator as participant if include_creator
+        if (parsed.include_creator) {
+          try {
+            await createParticipant({
+              memory_id: memory.id,
+              participant_telegram_id: telegramId,
+              role: "creator",
+              status: "active",
+            });
+          } catch (err) {
+            console.error("Creator participant creation failed (non-fatal):", err);
+          }
+        }
+
+        // Create participants for each resolved contact
+        const assignedNames: string[] = [];
+        const senderName = escapeHtml(ownerFirstName || "Someone");
+        for (const contact of resolved) {
+          let participantStatus: string;
+          if (contact.status === "approved") {
+            participantStatus = "active";
+          } else if (contact.contact_telegram_id) {
+            participantStatus = "pending_consent";
+          } else {
+            participantStatus = "pending_invite";
+          }
+
+          try {
+            await createParticipant({
+              memory_id: memory.id,
+              participant_telegram_id: contact.contact_telegram_id || 0,
+              role: "assignee",
+              status: participantStatus,
+            });
+
+            // Notify active recipients immediately
+            if (participantStatus === "active" && contact.contact_telegram_id) {
+              sendMessage(
+                contact.contact_telegram_id,
+                `\u{1F4E5} ${senderName} assigned you: <b>${escapeHtml(parsed.description)}</b>`,
+              ).catch(() => {});
+            }
+
+            assignedNames.push(escapeHtml(contact.first_name || contact.nickname));
+          } catch (err) {
+            console.error(`Participant creation failed for contact ${contact.id} (non-fatal):`, err);
+          }
+        }
+
+        // Build confirmation parts
+        const confirmParts: string[] = [];
+        if (parsed.include_creator) confirmParts.push("you");
+        confirmParts.push(...assignedNames);
+
+        // Warn about blocked contacts
+        if (notAccepting.length > 0) {
+          const names = notAccepting.map((n) => n.replace(" (not accepting)", "")).join(", ");
+          await sendMessage(chatId, `Note: <b>${escapeHtml(names)}</b> is not accepting tasks right now.`);
+        }
+
+        // Prompt to share unknown contacts, store memory_id for later linking
+        if (trueUnknown.length > 0) {
+          const unknownNames = trueUnknown.join(",");
+          await saveSession(telegramId, [memory.id], `awaiting_contact:${memory.id}:${unknownNames}`);
+          const namesList = trueUnknown.map((n) => `<b>${escapeHtml(n)}</b>`).join(", ");
+          const savedPart = confirmParts.length > 0
+            ? `\u{2705} Saved for ${confirmParts.join(", ")}: <b>${escapeHtml(parsed.description)}</b>\n\n`
+            : "";
+          const responseText = `${savedPart}I don't have a contact for ${namesList}. Share their Telegram contact so I can add them.`;
+          await sendMessage(chatId, responseText);
+          return { summary: `Shared ${parsed.intent}: ${parsed.description} (unknown: ${unknownNames})`, response: responseText };
+        }
+
+        await saveSession(telegramId, [memory.id], memory.due_date ? "created" : "awaiting_date");
+
+        const namesStr = confirmParts.join(", ");
+        const responseText = `\u{2705} Assigned to ${namesStr}: <b>${escapeHtml(parsed.description)}</b>`;
+        await sendMessage(chatId, responseText);
+        return { summary: `Shared ${parsed.intent}: ${parsed.description} -> ${namesStr}`, response: responseText };
       }
 
       const memory = await createMemory({

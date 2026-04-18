@@ -18,6 +18,7 @@ export interface TelegramMessage {
   voice?: TelegramVoice;
   forward_date?: number;
   forward_origin?: unknown;
+  contact?: TelegramContact;
 }
 
 export interface TelegramUser {
@@ -38,6 +39,13 @@ export interface TelegramVoice {
   duration: number;
   mime_type?: string;
   file_size?: number;
+}
+
+export interface TelegramContact {
+  phone_number: string;
+  first_name: string;
+  last_name?: string;
+  user_id?: number;
 }
 
 export interface TelegramCallbackQuery {
@@ -106,6 +114,8 @@ export interface GeminiParsedResponse {
   date_options: string[];
   query_date_start: string | null;
   query_date_end: string | null;
+  target_people: string[];
+  include_creator: boolean;
 }
 
 // ============================================================
@@ -148,6 +158,32 @@ export interface DbMemory {
   created_at: string;
   completed_at: string | null;
   snooze_count: number;
+  is_shared: boolean;
+}
+
+export interface DbContact {
+  id: string;
+  owner_telegram_id: number;
+  contact_telegram_id: number | null;
+  contact_phone: string;
+  nickname: string;
+  first_name: string | null;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface DbMemoryParticipant {
+  id: string;
+  memory_id: string;
+  participant_telegram_id: number;
+  role: string;
+  status: string;
+  is_reminded: boolean;
+  is_pre_reminded: boolean;
+  snooze_count: number;
+  completed_at: string | null;
+  created_at: string;
 }
 
 // ============================================================

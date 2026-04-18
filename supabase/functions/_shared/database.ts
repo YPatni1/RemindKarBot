@@ -1,5 +1,5 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { DbUser, DbMemory, ConversationMessage } from "./types.ts";
+import { DbUser, DbMemory, DbContact, DbMemoryParticipant, ConversationMessage } from "./types.ts";
 import { TZ_OFFSETS } from "./constants.ts";
 
 const supabase = createClient(
@@ -152,6 +152,7 @@ export async function createMemory(memory: {
   entities?: Record<string, unknown>;
   recurrence?: string | null;
   source?: string;
+  is_shared?: boolean;
   description_embedding?: number[] | null;
 }): Promise<DbMemory> {
   const { description_embedding, ...rest } = memory;
@@ -554,6 +555,284 @@ export async function getReferralStats(
 
   if (error) return { conversions: 0 };
   return { conversions: count ?? 0 };
+}
+
+// ---- Contacts ----
+
+export async function getContactsByOwner(ownerTelegramId: number): Promise<DbContact[]> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("owner_telegram_id", ownerTelegramId)
+    .order("nickname", { ascending: true });
+  if (error) throw error;
+  return (data ?? []) as DbContact[];
+}
+
+export async function getContactByNickname(
+  ownerTelegramId: number,
+  nickname: string,
+): Promise<DbContact[]> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("owner_telegram_id", ownerTelegramId)
+    .ilike("nickname", `%${escapeIlike(nickname)}%`);
+  if (error) throw error;
+  return (data ?? []) as DbContact[];
+}
+
+export async function getContactById(contactId: string): Promise<DbContact | null> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("id", contactId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DbContact | null;
+}
+
+export async function createContact(contact: {
+  owner_telegram_id: number;
+  contact_telegram_id: number | null;
+  contact_phone: string;
+  nickname: string;
+  first_name: string | null;
+  status?: string;
+}): Promise<DbContact> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .insert(contact)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as DbContact;
+}
+
+export async function updateContact(
+  contactId: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase
+    .from("contacts")
+    .update({ ...updates, updated_at: new Date().toISOString() })
+    .eq("id", contactId);
+  if (error) throw error;
+}
+
+export async function getApprovedSenders(recipientTelegramId: number): Promise<DbContact[]> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("contact_telegram_id", recipientTelegramId)
+    .eq("status", "approved");
+  if (error) throw error;
+  return (data ?? []) as DbContact[];
+}
+
+export async function getBlockedSenders(recipientTelegramId: number): Promise<DbContact[]> {
+  const { data, error } = await supabase
+    .from("contacts")
+    .select("*")
+    .eq("contact_telegram_id", recipientTelegramId)
+    .eq("status", "blocked");
+  if (error) throw error;
+  return (data ?? []) as DbContact[];
+}
+
+export async function blockSender(
+  senderTelegramId: number,
+  recipientTelegramId: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from("contacts")
+    .update({ status: "blocked", updated_at: new Date().toISOString() })
+    .eq("owner_telegram_id", senderTelegramId)
+    .eq("contact_telegram_id", recipientTelegramId);
+  if (error) throw error;
+}
+
+export async function unblockSender(
+  senderTelegramId: number,
+  recipientTelegramId: number,
+): Promise<void> {
+  const { error } = await supabase
+    .from("contacts")
+    .update({ status: "approved", updated_at: new Date().toISOString() })
+    .eq("owner_telegram_id", senderTelegramId)
+    .eq("contact_telegram_id", recipientTelegramId);
+  if (error) throw error;
+}
+
+// ---- Memory Participants ----
+
+export async function createParticipant(participant: {
+  memory_id: string;
+  participant_telegram_id: number;
+  role: string;
+  status: string;
+}): Promise<DbMemoryParticipant> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .insert(participant)
+    .select()
+    .single();
+  if (error) throw error;
+  return data as DbMemoryParticipant;
+}
+
+export async function updateParticipant(
+  participantId: string,
+  updates: Record<string, unknown>,
+): Promise<void> {
+  const { error } = await supabase
+    .from("memory_participants")
+    .update(updates)
+    .eq("id", participantId);
+  if (error) throw error;
+}
+
+export async function getParticipant(
+  memoryId: string,
+  participantTelegramId: number,
+): Promise<DbMemoryParticipant | null> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*")
+    .eq("memory_id", memoryId)
+    .eq("participant_telegram_id", participantTelegramId)
+    .maybeSingle();
+  if (error) throw error;
+  return data as DbMemoryParticipant | null;
+}
+
+export async function getParticipants(memoryId: string): Promise<DbMemoryParticipant[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*")
+    .eq("memory_id", memoryId);
+  if (error) throw error;
+  return (data ?? []) as DbMemoryParticipant[];
+}
+
+export async function getReceivedTasks(
+  participantTelegramId: number,
+): Promise<(DbMemoryParticipant & { memory: DbMemory })[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(*)")
+    .eq("participant_telegram_id", participantTelegramId)
+    .eq("status", "active")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as (DbMemoryParticipant & { memory: DbMemory })[];
+}
+
+export async function getAssignedByUser(
+  creatorTelegramId: number,
+): Promise<(DbMemoryParticipant & { memory: DbMemory })[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(*)")
+    .eq("role", "assignee")
+    .in("status", ["active", "pending_consent", "pending_invite", "done"])
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  const rows = (data ?? []) as (DbMemoryParticipant & { memory: DbMemory })[];
+  return rows.filter((r) => r.memory?.telegram_id === creatorTelegramId);
+}
+
+export async function activateParticipantsForContact(
+  senderTelegramId: number,
+  recipientTelegramId: number,
+  fromStatus: string,
+): Promise<DbMemoryParticipant[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(*)")
+    .eq("participant_telegram_id", recipientTelegramId)
+    .eq("status", fromStatus);
+  if (error) throw error;
+
+  const rows = (data ?? []) as (DbMemoryParticipant & { memory: DbMemory })[];
+  const matched = rows.filter((r) => r.memory?.telegram_id === senderTelegramId);
+
+  for (const participant of matched) {
+    const { error: updateErr } = await supabase
+      .from("memory_participants")
+      .update({ status: "active" })
+      .eq("id", participant.id);
+    if (updateErr) throw updateErr;
+  }
+
+  return matched;
+}
+
+export async function declineParticipantsFromSender(
+  senderTelegramId: number,
+  recipientTelegramId: number,
+): Promise<void> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(telegram_id)")
+    .eq("participant_telegram_id", recipientTelegramId)
+    .in("status", ["active", "pending_consent", "pending_invite"]);
+  if (error) throw error;
+
+  const rows = (data ?? []) as (DbMemoryParticipant & { memory: { telegram_id: number } })[];
+  const matched = rows.filter((r) => r.memory?.telegram_id === senderTelegramId);
+
+  for (const participant of matched) {
+    const { error: updateErr } = await supabase
+      .from("memory_participants")
+      .update({ status: "declined" })
+      .eq("id", participant.id);
+    if (updateErr) throw updateErr;
+  }
+}
+
+export async function getDueSharedReminders(): Promise<(DbMemoryParticipant & { memory: DbMemory })[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(*)")
+    .eq("status", "active")
+    .eq("is_reminded", false);
+  if (error) throw error;
+
+  const rows = (data ?? []) as (DbMemoryParticipant & { memory: DbMemory })[];
+  const now = new Date();
+  return rows.filter((r) => r.memory?.reminder_at && new Date(r.memory.reminder_at) <= now);
+}
+
+export async function getDueSharedPreReminders(): Promise<(DbMemoryParticipant & { memory: DbMemory })[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("*, memory:memories(*)")
+    .eq("status", "active")
+    .eq("is_pre_reminded", false);
+  if (error) throw error;
+
+  const rows = (data ?? []) as (DbMemoryParticipant & { memory: DbMemory })[];
+  const now = new Date();
+  const min25 = new Date(now.getTime() + 25 * 60 * 1000);
+  const min35 = new Date(now.getTime() + 35 * 60 * 1000);
+  return rows.filter((r) => {
+    if (!r.memory?.due_date) return false;
+    const due = new Date(r.memory.due_date);
+    return due >= min25 && due <= min35;
+  });
+}
+
+export async function getReceivedDigestTasks(participantTelegramId: number): Promise<DbMemory[]> {
+  const { data, error } = await supabase
+    .from("memory_participants")
+    .select("memory:memories(*)")
+    .eq("participant_telegram_id", participantTelegramId)
+    .eq("status", "active");
+  if (error) throw error;
+
+  const rows = (data ?? []) as { memory: DbMemory }[];
+  return rows.map((r) => r.memory).filter(Boolean);
 }
 
 // ---- Sessions ----

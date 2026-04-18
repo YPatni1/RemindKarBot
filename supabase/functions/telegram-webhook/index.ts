@@ -1796,13 +1796,53 @@ async function handleContactShare(message: TelegramMessage, startMs = Date.now()
       await sendMessage(chatId, `<b>${escapeHtml(contactFullName)}</b> is not accepting tasks right now.`);
     }
 
-    // If session had awaiting_contact:<original_message>, re-parse and route the original message
+    // If session had awaiting_contact:<memoryId>:<names>, link this contact as participant
     if (session?.last_intent?.startsWith("awaiting_contact:")) {
-      const originalMessage = session.last_intent.slice("awaiting_contact:".length);
-      if (originalMessage && dbContact.status === "approved") {
-        const parsedItems = await parseMessage(originalMessage, session.conversation_history ?? [], user.timezone);
-        for (const parsed of parsedItems) {
-          await routeParsedIntent(chatId, telegramId, user.id, originalMessage, parsed, "text", user.timezone);
+      const parts = session.last_intent.slice("awaiting_contact:".length).split(":");
+      const memoryId = parts[0];
+      const remainingNames = parts[1] ? parts[1].split(",") : [];
+
+      if (memoryId && dbContact) {
+        const participantStatus = dbContact.status === "approved" ? "active"
+          : (dbContact.contact_telegram_id ? "pending_consent" : "pending_invite");
+
+        try {
+          await createParticipant({
+            memory_id: memoryId,
+            participant_telegram_id: dbContact.contact_telegram_id || 0,
+            role: "assignee",
+            status: participantStatus,
+          });
+
+          // Notify active recipients immediately
+          if (participantStatus === "active" && dbContact.contact_telegram_id) {
+            const memory = await getMemoryById(memoryId);
+            if (memory) {
+              sendMessage(
+                dbContact.contact_telegram_id,
+                `\u{1F4E5} ${senderName} assigned you: <b>${escapeHtml(memory.description)}</b>`,
+              ).catch(() => {});
+            }
+          }
+        } catch (err) {
+          console.error("Participant creation from contact share failed (non-fatal):", err);
+        }
+
+        // Check if more unknown names remain
+        const matchedName = remainingNames.find(
+          (n) => n.toLowerCase() === contactFirstName.toLowerCase() || contactFullName.toLowerCase().includes(n.toLowerCase()),
+        );
+        const stillUnknown = remainingNames.filter((n) => n !== matchedName);
+
+        if (stillUnknown.length > 0) {
+          // More contacts to link — keep prompting
+          const unknownNames = stillUnknown.join(",");
+          await saveSession(telegramId, session.last_shown_ids ?? [], `awaiting_contact:${memoryId}:${unknownNames}`);
+          const namesList = stillUnknown.map((n) => `<b>${escapeHtml(n)}</b>`).join(", ");
+          await sendMessage(chatId, `Now share a contact for ${namesList}.`);
+        } else {
+          // All contacts linked — clear the awaiting state
+          await saveSession(telegramId, session.last_shown_ids ?? [], "created");
         }
       }
     }
@@ -2375,6 +2415,7 @@ async function routeParsedIntent(
         const { resolved, ambiguous, unknown } = await resolveTargetPeople(telegramId, parsed.target_people, ownerFirstName);
 
         // Handle ambiguous (multiple matches for same name) — show picker
+        // Ambiguous blocks task creation because we don't know which contact to use
         if (ambiguous.length > 0) {
           const first = ambiguous[0];
           const pickerButtons = first.matches.map((c) => [
@@ -2386,102 +2427,112 @@ async function routeParsedIntent(
           return { summary: `Ambiguous contact: ${first.name}`, response: pickerText };
         }
 
-        // Handle unknown names
-        if (unknown.length > 0) {
-          const notAccepting = unknown.filter((n) => n.endsWith("(not accepting)"));
-          const trueUnknown = unknown.filter((n) => !n.endsWith("(not accepting)"));
-
-          if (notAccepting.length > 0) {
-            const names = notAccepting.map((n) => n.replace(" (not accepting)", "")).join(", ");
-            const responseText = `<b>${escapeHtml(names)}</b> is not accepting tasks right now.`;
-            await sendMessage(chatId, responseText);
-            if (trueUnknown.length === 0 && resolved.length === 0) {
-              return { summary: `Contact declined: ${names}`, response: responseText };
-            }
-          }
-
-          if (trueUnknown.length > 0) {
-            const names = trueUnknown.join(", ");
-            const responseText = `I don't have a contact for <b>${escapeHtml(names)}</b>. Share their Telegram contact with me so I can connect you.`;
-            await sendMessage(chatId, responseText);
-            await saveSession(telegramId, [], `awaiting_contact:${rawInput}`);
-            return { summary: `Unknown contact: ${names}`, response: responseText };
-          }
-        }
-
-        // All resolved — create shared memory
-        if (resolved.length > 0) {
-          const memory = await createMemory({
-            user_id: userId,
-            telegram_id: telegramId,
-            type: parsed.intent,
-            description: parsed.description,
-            raw_input: rawInput,
-            due_date: parsed.due_date,
-            reminder_at: parsed.reminder_at,
-            entities: parsed.entities,
-            recurrence: parsed.recurrence,
-            source,
-            is_shared: true,
-            description_embedding: embedding,
-          });
-
-          await saveSession(telegramId, [memory.id], memory.due_date ? "created" : "awaiting_date");
-
-          // Add creator as participant if include_creator
-          if (parsed.include_creator) {
-            try {
-              await createParticipant({
-                memory_id: memory.id,
-                participant_telegram_id: telegramId,
-                role: "creator",
-                status: "active",
-              });
-            } catch (err) {
-              console.error("Creator participant creation failed (non-fatal):", err);
-            }
-          }
-
-          // Create participants for each contact
-          const assignedNames: string[] = [];
-          const senderName = escapeHtml(ownerFirstName || "Someone");
-          for (const contact of resolved) {
-            let participantStatus: string;
-            if (contact.status === "approved") {
-              participantStatus = "active";
-            } else if (contact.contact_telegram_id) {
-              participantStatus = "pending_consent";
-            } else {
-              participantStatus = "pending_invite";
-            }
-
-            try {
-              await createParticipant({
-                memory_id: memory.id,
-                participant_telegram_id: contact.contact_telegram_id || 0,
-                role: "assignee",
-                status: participantStatus,
-              });
-
-              // Notify active recipients immediately
-              if (participantStatus === "active" && contact.contact_telegram_id) {
-                sendMessage(
-                  contact.contact_telegram_id,
-                  `\u{1F4E5} ${senderName} assigned you: <b>${escapeHtml(parsed.description)}</b>`,
-                ).catch(() => {});
-              }
-
-              assignedNames.push(escapeHtml(contact.first_name || contact.nickname));
-            } catch (err) {
-              console.error(`Participant creation failed for contact ${contact.id} (non-fatal):`, err);
-            }
-          }
-
-          const namesStr = assignedNames.join(", ");
-          const responseText = `\u{2705} Assigned to ${namesStr}: <b>${escapeHtml(parsed.description)}</b>`;
+        // If ALL contacts are blocked/declined and none resolved, abort
+        const notAccepting = unknown.filter((n) => n.endsWith("(not accepting)"));
+        const trueUnknown = unknown.filter((n) => !n.endsWith("(not accepting)"));
+        if (notAccepting.length > 0 && trueUnknown.length === 0 && resolved.length === 0) {
+          const names = notAccepting.map((n) => n.replace(" (not accepting)", "")).join(", ");
+          const responseText = `<b>${escapeHtml(names)}</b> is not accepting tasks right now.`;
           await sendMessage(chatId, responseText);
-          return { summary: `Shared ${parsed.intent}: ${parsed.description} -> ${namesStr}`, response: responseText };
+          return { summary: `Contact declined: ${names}`, response: responseText };
         }
+
+        // Always create the memory — even if some contacts are unknown.
+        // The creator's task should never be lost.
+        const memory = await createMemory({
+          user_id: userId,
+          telegram_id: telegramId,
+          type: parsed.intent,
+          description: parsed.description,
+          raw_input: rawInput,
+          due_date: parsed.due_date,
+          reminder_at: parsed.reminder_at,
+          entities: parsed.entities,
+          recurrence: parsed.recurrence,
+          source,
+          is_shared: true,
+          description_embedding: embedding,
+        });
+
+        // Add creator as participant if include_creator
+        if (parsed.include_creator) {
+          try {
+            await createParticipant({
+              memory_id: memory.id,
+              participant_telegram_id: telegramId,
+              role: "creator",
+              status: "active",
+            });
+          } catch (err) {
+            console.error("Creator participant creation failed (non-fatal):", err);
+          }
+        }
+
+        // Create participants for each resolved contact
+        const assignedNames: string[] = [];
+        const senderName = escapeHtml(ownerFirstName || "Someone");
+        for (const contact of resolved) {
+          let participantStatus: string;
+          if (contact.status === "approved") {
+            participantStatus = "active";
+          } else if (contact.contact_telegram_id) {
+            participantStatus = "pending_consent";
+          } else {
+            participantStatus = "pending_invite";
+          }
+
+          try {
+            await createParticipant({
+              memory_id: memory.id,
+              participant_telegram_id: contact.contact_telegram_id || 0,
+              role: "assignee",
+              status: participantStatus,
+            });
+
+            // Notify active recipients immediately
+            if (participantStatus === "active" && contact.contact_telegram_id) {
+              sendMessage(
+                contact.contact_telegram_id,
+                `\u{1F4E5} ${senderName} assigned you: <b>${escapeHtml(parsed.description)}</b>`,
+              ).catch(() => {});
+            }
+
+            assignedNames.push(escapeHtml(contact.first_name || contact.nickname));
+          } catch (err) {
+            console.error(`Participant creation failed for contact ${contact.id} (non-fatal):`, err);
+          }
+        }
+
+        // Build confirmation parts
+        const confirmParts: string[] = [];
+        if (parsed.include_creator) confirmParts.push("you");
+        confirmParts.push(...assignedNames);
+
+        // Warn about blocked contacts
+        if (notAccepting.length > 0) {
+          const names = notAccepting.map((n) => n.replace(" (not accepting)", "")).join(", ");
+          await sendMessage(chatId, `Note: <b>${escapeHtml(names)}</b> is not accepting tasks right now.`);
+        }
+
+        // Prompt to share unknown contacts, store memory_id for later linking
+        if (trueUnknown.length > 0) {
+          const unknownNames = trueUnknown.join(",");
+          await saveSession(telegramId, [memory.id], `awaiting_contact:${memory.id}:${unknownNames}`);
+          const namesList = trueUnknown.map((n) => `<b>${escapeHtml(n)}</b>`).join(", ");
+          const savedPart = confirmParts.length > 0
+            ? `\u{2705} Saved for ${confirmParts.join(", ")}: <b>${escapeHtml(parsed.description)}</b>\n\n`
+            : "";
+          const responseText = `${savedPart}I don't have a contact for ${namesList}. Share their Telegram contact so I can add them.`;
+          await sendMessage(chatId, responseText);
+          return { summary: `Shared ${parsed.intent}: ${parsed.description} (unknown: ${unknownNames})`, response: responseText };
+        }
+
+        await saveSession(telegramId, [memory.id], memory.due_date ? "created" : "awaiting_date");
+
+        const namesStr = confirmParts.join(", ");
+        const responseText = `\u{2705} Assigned to ${namesStr}: <b>${escapeHtml(parsed.description)}</b>`;
+        await sendMessage(chatId, responseText);
+        return { summary: `Shared ${parsed.intent}: ${parsed.description} -> ${namesStr}`, response: responseText };
       }
 
       const memory = await createMemory({

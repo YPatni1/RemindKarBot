@@ -57,7 +57,9 @@ Each object should have this structure:
   "ambiguous_date": true | false,
   "date_options": ["If ambiguous_date is true, list possible date interpretations as ISO 8601 strings"],
   "query_date_start": "If intent is 'query' and the user asks about a date range ('this week', 'today', 'last Tuesday'), ISO 8601 start datetime. null otherwise.",
-  "query_date_end": "If intent is 'query' and the user asks about a date range, ISO 8601 end datetime. null otherwise."
+  "query_date_end": "If intent is 'query' and the user asks about a date range, ISO 8601 end datetime. null otherwise.",
+  "target_people": ["List of people names the task/reminder should be sent TO (not the sender). Empty array if task is for the sender only. Extract names from phrases like 'remind Ameet to...', 'tell Priya and Raj about...'. Do NOT include the sender/user themselves."],
+  "include_creator": "true if the sender also wants to be a participant (phrases like 'remind me and Ameet', 'remind us', 'me, Yash, and Ameet'). false if task is only for others ('remind Ameet to...', 'tell Priya about...'). false if target_people is empty."
 }
 
 Rules:
@@ -103,6 +105,17 @@ General rules:
 - For voice transcriptions, clean up filler words but preserve the core meaning
 - IMPORTANT: If the user mentions multiple separate tasks in one message (e.g. "remind me about X, and also Y, and I need to do Z"), create a SEPARATE entry for EACH distinct task. Return a JSON array of objects, one per task. Each gets its own description, due_date, reminder_at, etc.
 
+Shared tasks (target_people):
+- If the user mentions other people as task recipients ("remind Ameet to...", "tell Priya about..."), extract their names into target_people array. Do NOT include the sender.
+- "remind me and Ameet about..." → target_people: ["Ameet"], include_creator: true (user wants to be included)
+- "remind Ameet to send invoice" → target_people: ["Ameet"], include_creator: false (task is only for Ameet)
+- "remind us about the call" → target_people: [], include_creator: false (no specific names = solo task for the user)
+- "tell Priya and Raj about the meeting" → target_people: ["Priya", "Raj"], include_creator: false
+- Hindi/Marathi: "Ameet ko yaad dila do" → target_people: ["Ameet"], include_creator: false
+- "mujhe aur Ameet ko remind kar" → target_people: ["Ameet"], include_creator: true
+- "hum sabko yaad dila" → target_people: [], include_creator: false (no specific names = solo task)
+- If target_people is empty, always set include_creator to false (solo task, default behavior).
+
 Few-shot examples (assuming Asia/Kolkata, UTC+05:30):
 
 User: "remind me to call mom"
@@ -126,7 +139,16 @@ User: "nothing for today, I'm off"
 
 User: "move the 5 PM meeting to 7"
 → {"intent":"reschedule","description":"5 PM meeting","reschedule_to":"2026-04-13T13:30:00.000Z",...}
-(7 PM IST = 7:00 − 5:30 = 13:30 UTC)`;
+(7 PM IST = 7:00 − 5:30 = 13:30 UTC)
+
+User: "remind Ameet to send the invoice by Friday"
+→ {"intent":"task","description":"Send the invoice","due_date":"...Friday UTC...","target_people":["Ameet"],"include_creator":false,...}
+
+User: "remind me and Priya about tonight's call at 8 PM"
+→ {"intent":"reminder","description":"Tonight's call","due_date":"...8PM UTC...","target_people":["Priya"],"include_creator":true,...}
+
+User: "Ameet ko bol ki report bhej de kal tak"
+→ {"intent":"task","description":"Report bhej do","due_date":"...tomorrow UTC...","target_people":["Ameet"],"include_creator":false,...}`;
 
 export async function parseMessage(
   userMessage: string,

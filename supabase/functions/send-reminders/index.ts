@@ -1,5 +1,5 @@
-import { getDueReminders, getDuePreReminders, updateMemory, getUser } from "../_shared/database.ts";
-import { sendMessageWithButtons } from "../_shared/telegram.ts";
+import { getDueReminders, getDuePreReminders, updateMemory, getUser, getDueSharedReminders, getDueSharedPreReminders, updateParticipant } from "../_shared/database.ts";
+import { sendMessageWithButtons, escapeHtml } from "../_shared/telegram.ts";
 import { formatReminder, formatPreReminder } from "../_shared/formatters.ts";
 
 Deno.serve(async (req) => {
@@ -51,8 +51,49 @@ Deno.serve(async (req) => {
       }
     }
 
+    // 3. Send shared pre-reminders
+    const sharedPreReminders = await getDueSharedPreReminders();
+    console.log(`send-reminders: ${sharedPreReminders.length} shared pre-reminders due`);
+
+    for (const sp of sharedPreReminders) {
+      try {
+        const tz = await getUserTz(sp.participant_telegram_id);
+        const { text, buttons } = formatPreReminder(sp.memory, tz);
+        const senderUser = await getUser(sp.memory.telegram_id);
+        const senderName = senderUser?.first_name || "Someone";
+        const taggedText = `${text}\n<i>Shared by ${escapeHtml(senderName)}</i>`;
+        await sendMessageWithButtons(sp.participant_telegram_id, taggedText, buttons);
+        await updateParticipant(sp.id, { is_pre_reminded: true });
+      } catch (err) {
+        console.error(`Failed to send shared pre-reminder for participant ${sp.id}:`, err);
+      }
+    }
+
+    // 4. Send shared due reminders
+    const sharedReminders = await getDueSharedReminders();
+    console.log(`send-reminders: ${sharedReminders.length} shared reminders due`);
+
+    for (const sr of sharedReminders) {
+      try {
+        const tz = await getUserTz(sr.participant_telegram_id);
+        const { text, buttons } = formatReminder(sr.memory, tz);
+        const senderUser = await getUser(sr.memory.telegram_id);
+        const senderName = senderUser?.first_name || "Someone";
+        const taggedText = `${text}\n<i>Shared by ${escapeHtml(senderName)}</i>`;
+        await sendMessageWithButtons(sr.participant_telegram_id, taggedText, buttons);
+        await updateParticipant(sr.id, { is_reminded: true });
+      } catch (err) {
+        console.error(`Failed to send shared reminder for participant ${sr.id}:`, err);
+      }
+    }
+
     console.log("send-reminders: done");
-    return new Response(JSON.stringify({ pre: preReminders.length, reminders: reminders.length }), {
+    return new Response(JSON.stringify({
+      pre: preReminders.length,
+      reminders: reminders.length,
+      shared_pre: sharedPreReminders.length,
+      shared_reminders: sharedReminders.length,
+    }), {
       status: 200,
       headers: { "Content-Type": "application/json" },
     });

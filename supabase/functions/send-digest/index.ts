@@ -1,6 +1,7 @@
-import { getActiveConsentedUsers, getDigestMemories } from "../_shared/database.ts";
+import { getActiveConsentedUsers, getDigestMemories, getReceivedDigestTasks, getUser } from "../_shared/database.ts";
 import { sendMessage } from "../_shared/telegram.ts";
 import { formatDigest } from "../_shared/formatters.ts";
+import { DbMemory } from "../_shared/types.ts";
 
 Deno.serve(async (req) => {
   try {
@@ -20,9 +21,20 @@ Deno.serve(async (req) => {
       try {
         const tz = user.timezone || "Asia/Kolkata";
         const { overdue, today, tomorrow, somedayCount } = await getDigestMemories(user.telegram_id, tz);
+        const receivedMemories = await getReceivedDigestTasks(user.telegram_id);
+        const receivedTasks: { memory: DbMemory; senderName: string }[] = [];
+        for (const m of receivedMemories) {
+          const senderUser = await getUser(m.telegram_id);
+          receivedTasks.push({
+            memory: m,
+            senderName: senderUser?.first_name || "Someone",
+          });
+        }
+
         const digestText = formatDigest(
           user.first_name, overdue, today, tomorrow, somedayCount, tz,
           user.current_streak ?? 0, user.longest_streak ?? 0,
+          receivedTasks,
         );
 
         // Skip users with nothing pending

@@ -47,16 +47,20 @@
 
 ---
 
-## This Quarter — Make It Grow
+## Shared Reminders & Delegation (Shipped 2026-04-18)
 
-- [ ] **Shared reminders (fan-out to contacts)**
-  Let users say "remind me, Yash, and Ameet about tonight's call" and have all three receive the reminder.
-  - **Identity anchor:** Phone number, collected via Telegram's native "Share Contact" button (sends phone + telegram_user_id in one tap). Stored in `users.phone_number`.
-  - **Contacts book:** `contacts` table (owner_telegram_id, contact_telegram_id, contact_phone, nickname, verified). Verified once per contact, resolved by nickname on future tasks.
-  - **Linking flow:** Bot extracts names from `entities.people`. Unknown names → "Share Yash's contact." Phone matched in `users` → verified. No match → invite link sent.
-  - **Recipient consent:** Before adding anyone, send them: "Yash wants to include you in a reminder. [Accept] [Decline]". No spam vector.
-  - **Fan-out on fire:** `memory_participants` table (memory_id, participant_telegram_id, status). Reminder sent to creator + all accepted participants independently.
-  - **Schema additions:** `users.phone_number`, `contacts` table, `memory_participants` table.
+- [x] **Shared reminders (fan-out to contacts)**
+  "remind me, Yash, and Ameet about tonight's call" — all receive independent reminders.
+  - **Contacts book:** `contacts` table with consent model (`pending` → `approved` via callback).
+  - **Contact linking:** Telegram Share Contact → nickname resolution. Unknown names → "Share their contact." Invite link for non-users.
+  - **Delegation vs fan-out:** `include_creator: false` = task for others only; `true` = creator + others.
+  - **Per-participant state:** `memory_participants` tracks done/snooze/decline per person. Done on received task notifies creator.
+  - **Commands:** `/contacts`, `/block`, `/unblock`, `/assigned`.
+  - **Cron integration:** `send-reminders` fans out to participants. `send-digest` includes "Assigned to you" section.
+
+---
+
+## This Quarter — Make It Grow
 
 - [ ] **Reminder fan-out architecture**
   Current: sequential loop in `send-reminders` (one HTTP call at a time). Dies at 500+ users.

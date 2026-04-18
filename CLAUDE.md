@@ -6,7 +6,7 @@ Telegram bot (RemindKar) — personal AI memory and commitment tracker. Users se
 ## Stack
 - **Runtime:** Supabase Edge Functions (Deno/TypeScript)
 - **AI:** Gemini 2.5 Flash for NLU parsing, text-embedding-004 for vector embeddings (NOT 2.0 — deprecated)
-- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `feedback`, `referrals`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`)
+- **DB:** Supabase PostgreSQL + pgvector (tables: `users`, `memories`, `user_sessions`, `conversation_logs`, `feedback`, `referrals`, `contacts`, `memory_participants`, `archived_users`, `archived_memories`, `archived_user_sessions`, `archived_conversation_logs`, `archived_contacts`, `archived_memory_participants`)
 - **Cron:** pg_cron + pg_net (digest at 3:30 UTC, reminders every 5 min)
 - **Bot API:** Telegram Bot API via webhooks (NOT polling)
 
@@ -36,6 +36,7 @@ supabase/
     009_phase2_snooze_streaks.sql  # snooze_count on memories, streak fields on users
     010_referrals.sql              # referrals table + referral_code/referred_by on users
     011_archive_schema_sync.sql    # Sync archive tables + triggers with columns from 003/007/009/010
+    012_shared_reminders.sql        # contacts, memory_participants, is_shared, phone_number, archive tables + triggers
 ```
 
 ## Supported Intents
@@ -109,6 +110,15 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - Referral tracking: `/share` sends `switch_inline_query_chosen_chat` button. Inline query handler logs share via `createReferral` and responds with invite card containing deep link. `/start ref_<telegram_id>` triggers `convertReferral` in `handleStart`. Referrer notified on conversion (non-fatal if blocked).
 - `BOT_HANDLE` constant in `_shared/constants.ts` — must match actual BotFather username for deep links to work.
 - Referral code format: `ref_<telegram_id>` (deterministic). Self-referral blocked in `convertReferral`. `users` gets `referral_code` (text unique) and `referred_by` (bigint FK). Migration 010.
+- Shared tasks: `target_people` in GeminiParsedResponse triggers shared-task path. Solo tasks (`target_people: []`) are completely unchanged. `memory_participants` tracks per-person state for shared tasks. `contacts` table is per-user private address book.
+- Contact linking: Telegram Share Contact → `contacts` row. Session intent `awaiting_contact:<msg>` re-processes original message after contact shared.
+- Consent model: one-time approval per sender stored in `contacts.status`. `consent_allow:` / `consent_decline:` callbacks. After approval, all future tasks flow without prompts.
+- Delegation vs fan-out: `include_creator: false` = delegation (task for others only), `include_creator: true` = fan-out (creator also a participant).
+- Done on received task: updates `memory_participants.status`, NOT `memories.status`. Notifies creator.
+- Delete on received task: sets `memory_participants.status = 'declined'`. Does NOT delete the memory. Creator NOT notified.
+- Commands: `/contacts` lists address book, `/block` blocks a sender, `/unblock` unblocks, `/assigned` shows tasks delegated to others.
+- Shared reminders: `send-reminders` fans out to participants independently. Tags with "Shared by {sender}".
+- Digest: `formatDigest` includes "Assigned to you" section for received tasks.
 
 ## Local Dev
 `.env` file at project root (gitignored) holds: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Use `source .env` before running curl commands locally.

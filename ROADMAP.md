@@ -60,6 +60,13 @@
 
 ---
 
+## Bug Fixes (2026-04-19)
+
+- [x] **`awaiting_contact` session overwrite** — `handleText`'s final `saveSession` was overwriting the `awaiting_contact:<memoryId>:<names>` intent set by `routeParsedIntent` with computed `lastIntent`. Fixed by preserving session intent when it starts with `awaiting_contact:` or `awaiting_contact_pick:`.
+- [x] **Progressive clarification too greedy** — `tryApplyDate` case #2 matched any task/reminder with a `due_date`, consuming full new task messages (e.g. "Remind me to take medicine at 8 AM tomorrow") as date follow-ups. Fixed with `text.split(/\s+/).length <= 5` guard.
+
+---
+
 ## This Quarter — Make It Grow
 
 - [ ] **Reminder fan-out architecture**

@@ -119,6 +119,8 @@ Use `npx supabase` (not global install — brew fails on macOS 26).
 - Commands: `/contacts` lists address book, `/block` blocks a sender, `/unblock` unblocks, `/assigned` shows tasks delegated to others.
 - Shared reminders: `send-reminders` fans out to participants independently. Tags with "Shared by {sender}".
 - Digest: `formatDigest` includes "Assigned to you" section for received tasks.
+- Session preservation for shared tasks: `handleText`'s final `saveSession` checks if current session intent starts with `awaiting_contact:` or `awaiting_contact_pick:` and preserves it — prevents overwriting by `lastIntent`.
+- Progressive clarification word-count guard: `tryApplyDate` case #2 only applies when `text.trim().split(/\s+/).length <= 5` — short messages like "tomorrow 5pm" work as date follow-ups, but longer messages like "Remind me to take medicine at 8 AM" create new items.
 
 ## Local Dev
 `.env` file at project root (gitignored) holds: `TELEGRAM_BOT_TOKEN`, `GEMINI_API_KEY`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`. Use `source .env` before running curl commands locally.

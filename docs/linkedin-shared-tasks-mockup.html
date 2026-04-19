@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RemindKar Shared Tasks</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    background: #0a0f1a;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    padding: 40px;
+  }
+
+  .container {
+    display: flex;
+    gap: 32px;
+    align-items: flex-start;
+    position: relative;
+  }
+
+  /* Arrow between phones */
+  .arrow-connector {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 10;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+  }
+  .arrow-connector .arrow-circle {
+    width: 56px;
+    height: 56px;
+    background: linear-gradient(135deg, #6ab2f2, #3a8fd4);
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 26px;
+    color: #fff;
+    box-shadow: 0 4px 20px rgba(106, 178, 242, 0.4);
+  }
+  .arrow-connector .arrow-label {
+    color: #6ab2f2;
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+
+  /* Phone labels */
+  .phone-wrapper {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  .phone-label {
+    color: #8899a6;
+    font-size: 13px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+  }
+  .phone-label .name {
+    color: #fff;
+    font-size: 16px;
+    text-transform: none;
+    letter-spacing: 0;
+    display: block;
+    margin-top: 2px;
+  }
+
+  .phone {
+    width: 340px;
+    height: 680px;
+    background: #0e1621;
+    border-radius: 36px;
+    overflow: hidden;
+    border: 2.5px solid #2a2a2a;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+  }
+
+  /* Status bar */
+  .status-bar {
+    height: 44px;
+    background: #17212b;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 24px;
+    font-size: 13px;
+    color: #fff;
+    font-weight: 600;
+  }
+  .status-bar .icons { display: flex; gap: 5px; align-items: center; }
+  .status-bar .icons span { font-size: 12px; }
+
+  /* Chat header */
+  .chat-header {
+    background: #17212b;
+    padding: 8px 14px 10px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    border-bottom: 1px solid #0e1621;
+  }
+  .back-arrow {
+    color: #6ab2f2;
+    font-size: 18px;
+  }
+  .bot-avatar {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(135deg, #6ab2f2, #3a8fd4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    color: #fff;
+    font-weight: 700;
+    flex-shrink: 0;
+  }
+  .header-info { flex: 1; }
+  .header-name {
+    color: #fff;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .header-status {
+    color: #6ab2f2;
+    font-size: 12px;
+  }
+
+  /* Chat area */
+  .chat-area {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px 8px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    background: #0e1621;
+  }
+
+  /* Date separator */
+  .date-sep {
+    text-align: center;
+    margin: 6px 0;
+  }
+  .date-sep span {
+    background: #182533;
+    color: #6d7f8e;
+    font-size: 12px;
+    padding: 3px 10px;
+    border-radius: 10px;
+  }
+
+  /* Message bubbles */
+  .msg {
+    max-width: 85%;
+    padding: 6px 10px 3px;
+    border-radius: 10px;
+    font-size: 13.5px;
+    line-height: 1.35;
+    position: relative;
+    word-wrap: break-word;
+  }
+  .msg-row {
+    display: flex;
+    margin-bottom: 2px;
+  }
+  .msg-row.user { justify-content: flex-end; }
+  .msg-row.bot { justify-content: flex-start; }
+
+  .msg.user-msg {
+    background: #2b5278;
+    color: #fff;
+    border-bottom-right-radius: 3px;
+  }
+  .msg.bot-msg {
+    background: #182533;
+    color: #fff;
+    border-bottom-left-radius: 3px;
+  }
+
+  .msg-time {
+    font-size: 10px;
+    color: #6d8fa3;
+    text-align: right;
+    margin-top: 1px;
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 3px;
+  }
+  .msg-row.user .msg-time { color: #7eaec7; }
+
+  .check { font-size: 11px; color: #52b4e6; }
+
+  /* Inline buttons */
+  .inline-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 3px;
+    margin-top: 5px;
+  }
+  .inline-btn {
+    background: transparent;
+    border: 1px solid rgba(106, 178, 242, 0.3);
+    color: #6ab2f2;
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 11.5px;
+    cursor: pointer;
+    flex: 1;
+    text-align: center;
+    min-width: 0;
+  }
+
+  /* Input bar */
+  .input-bar {
+    background: #17212b;
+    padding: 6px 8px 22px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .input-field {
+    flex: 1;
+    background: #242f3d;
+    border: none;
+    border-radius: 18px;
+    padding: 8px 14px;
+    color: #fff;
+    font-size: 13.5px;
+    outline: none;
+  }
+  .input-field::placeholder { color: #6d7f8e; }
+  .mic-btn {
+    width: 34px;
+    height: 34px;
+    background: #6ab2f2;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: #fff;
+    font-size: 16px;
+  }
+  .input-actions {
+    color: #6d7f8e;
+    font-size: 18px;
+  }
+
+  .bold { font-weight: 600; }
+
+  /* Highlight glow for shared notification */
+  .highlight-msg {
+    box-shadow: 0 0 12px rgba(106, 178, 242, 0.15);
+  }
+
+  /* Shared tag */
+  .shared-tag {
+    color: #6ab2f2;
+    font-size: 12px;
+    font-style: italic;
+    margin-top: 4px;
+  }
+
+  /* Spacer */
+  .spacer { height: 8px; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <!-- LEFT PHONE: You (sender) -->
+  <div class="phone-wrapper">
+    <div class="phone-label">
+      You
+      <span class="name">Yash</span>
+    </div>
+    <div class="phone">
+      <div class="status-bar">
+        <span>9:41</span>
+        <div class="icons">
+          <span>&#9679;&#9679;&#9679;&#9679;</span>
+          <span>&#128267;</span>
+        </div>
+      </div>
+
+      <div class="chat-header">
+        <span class="back-arrow">&#8249;</span>
+        <div class="bot-avatar">R</div>
+        <div class="header-info">
+          <div class="header-name">RemindKar</div>
+          <div class="header-status">bot</div>
+        </div>
+      </div>
+
+      <div class="chat-area">
+        <div class="date-sep"><span>Today</span></div>
+
+        <!-- Message 1: Assign to friend -->
+        <div class="msg-row user">
+          <div class="msg user-msg">
+            Remind Rohit to book the turf by tomorrow 6 PM
+            <div class="msg-time">10:15 AM <span class="check">&#10003;&#10003;</span></div>
+          </div>
+        </div>
+
+        <div class="msg-row bot">
+          <div class="msg bot-msg highlight-msg">
+            Saved &#10003; &#9200; <span class="bold">Book the turf</span> &mdash; Mon, 21 Apr, 6:00 pm
+            <br>&#128100; Shared with <span class="bold">Rohit</span>
+            <br>I'll remind him at 5:30 pm
+            <div class="inline-buttons">
+              <div class="inline-btn">&#9989; Done</div>
+              <div class="inline-btn">&#128465; Delete</div>
+            </div>
+            <div class="msg-time">10:15 AM</div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <!-- Message 2: Remind cook flow -->
+        <div class="msg-row user">
+          <div class="msg user-msg">
+            Mujhe dhaniya lana hai, aaj shaam tak remind kar
+            <div class="msg-time">10:16 AM <span class="check">&#10003;&#10003;</span></div>
+          </div>
+        </div>
+
+        <div class="msg-row bot">
+          <div class="msg bot-msg">
+            Saved &#10003; &#9200; <span class="bold">Buy dhaniya</span> &mdash; Today, 6:00 pm
+            <br>I'll remind you at 5:30 pm
+            <div class="inline-buttons">
+              <div class="inline-btn">&#9989; Done</div>
+              <div class="inline-btn">&#128465; Delete</div>
+              <div class="inline-btn">&#10067; Wrong?</div>
+            </div>
+            <div class="msg-time">10:16 AM</div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+
+        <!-- Message 3: Group plan reminder -->
+        <div class="msg-row user">
+          <div class="msg user-msg">
+            Remind Aman to send the project report by Friday
+            <div class="msg-time">10:18 AM <span class="check">&#10003;&#10003;</span></div>
+          </div>
+        </div>
+
+        <div class="msg-row bot">
+          <div class="msg bot-msg highlight-msg">
+            Saved &#10003; &#128203; <span class="bold">Send the project report</span> &mdash; Fri, 25 Apr, 11:59 pm
+            <br>&#128100; Shared with <span class="bold">Aman</span>
+            <br>I'll remind him at 11:29 pm
+            <div class="inline-buttons">
+              <div class="inline-btn">&#9989; Done</div>
+              <div class="inline-btn">&#128465; Delete</div>
+            </div>
+            <div class="msg-time">10:18 AM</div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="input-bar">
+        <div class="input-actions">&#128206;</div>
+        <input class="input-field" placeholder="Message" readonly>
+        <div class="input-actions">&#128515;</div>
+        <div class="mic-btn">&#127908;</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Arrow -->
+  <div class="arrow-connector">
+    <div class="arrow-circle">&#10132;</div>
+    <div class="arrow-label">Reminder sent</div>
+  </div>
+
+  <!-- RIGHT PHONE: Rohit (receiver) -->
+  <div class="phone-wrapper">
+    <div class="phone-label">
+      Your friend
+      <span class="name">Rohit</span>
+    </div>
+    <div class="phone">
+      <div class="status-bar">
+        <span>5:30</span>
+        <div class="icons">
+          <span>&#9679;&#9679;&#9679;&#9679;</span>
+          <span>&#128267;</span>
+        </div>
+      </div>
+
+      <div class="chat-header">
+        <span class="back-arrow">&#8249;</span>
+        <div class="bot-avatar">R</div>
+        <div class="header-info">
+          <div class="header-name">RemindKar</div>
+          <div class="header-status">bot</div>
+        </div>
+      </div>
+
+      <div class="chat-area">
+        <div class="date-sep"><span>Tomorrow</span></div>
+
+        <!-- Rohit receives the reminder -->
+        <div class="msg-row bot">
+          <div class="msg bot-msg highlight-msg">
+            &#9200; <span class="bold">Reminder!</span>
+            <br><br>&#128203; <span class="bold">Book the turf</span>
+            <br>&#128197; Mon, 21 Apr, 6:00 pm
+            <br><br>&#8987; 30 minutes left!
+            <div class="shared-tag">Shared by Yash</div>
+            <div class="inline-buttons">
+              <div class="inline-btn">&#9989; Done</div>
+              <div class="inline-btn">&#128164; Snooze</div>
+            </div>
+            <div class="msg-time">5:30 PM</div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+
+        <!-- Rohit marks it done -->
+        <div class="msg-row bot">
+          <div class="msg bot-msg" style="background: #1a2e1a; border: 1px solid rgba(76, 175, 80, 0.2);">
+            &#127881; <span class="bold">Nice!</span> That's the spirit.
+            <br><br>&#9989; <span class="bold">Book the turf</span> &mdash; marked as done
+            <div class="inline-buttons">
+              <div class="inline-btn" style="border-color: rgba(76, 175, 80, 0.3); color: #81c784;">&#8630; Undo (30s)</div>
+            </div>
+            <div class="msg-time">5:31 PM</div>
+          </div>
+        </div>
+
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+        <div class="spacer"></div>
+
+        <!-- How it works callout -->
+        <div style="text-align: center; padding: 20px 16px;">
+          <div style="color: #6ab2f2; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 10px;">How it works</div>
+          <div style="color: #8899a6; font-size: 12px; line-height: 1.6;">
+            <span style="color: #fff;">1.</span> Tell the bot to remind someone<br>
+            <span style="color: #fff;">2.</span> Share their contact<br>
+            <span style="color: #fff;">3.</span> They get the reminder on time
+          </div>
+        </div>
+
+      </div>
+
+      <div class="input-bar">
+        <div class="input-actions">&#128206;</div>
+        <input class="input-field" placeholder="Message" readonly>
+        <div class="input-actions">&#128515;</div>
+        <div class="mic-btn">&#127908;</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</body>
+</html>

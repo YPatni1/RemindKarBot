@@ -2001,10 +2001,15 @@ async function handleText(message: TelegramMessage, startMs = Date.now()): Promi
 
     // Get current session IDs (may have been updated by routeParsedIntent)
     const currentSession = await getSession(telegramId);
+
+    // Preserve awaiting_contact/awaiting_contact_pick intents set by routeParsedIntent —
+    // these must not be overwritten or the contact-linking flow breaks
+    const currentIntent = currentSession?.last_intent ?? "";
+    const preserveIntent = currentIntent.startsWith("awaiting_contact:") || currentIntent.startsWith("awaiting_contact_pick:");
     await saveSession(
       telegramId,
       currentSession?.last_shown_ids ?? [],
-      lastIntent,
+      preserveIntent ? currentIntent : lastIntent,
       newHistory,
       sessionId,
     );
@@ -2070,8 +2075,10 @@ async function tryApplyDate(
       return `Set reminder for ${formatted}`;
     }
 
-    // Check if it's a task/reminder with a due_date (Gemini might reinterpret the date as a new task)
-    if ((p.intent === "task" || p.intent === "reminder") && p.due_date) {
+    // Check if it's a task/reminder with a due_date (Gemini might reinterpret the date as a new task).
+    // Only apply if the message is short (≤5 words) — likely just a date/time, not a full new task.
+    // Longer messages like "Remind me to take medicine at 8 AM" should create a new item instead.
+    if ((p.intent === "task" || p.intent === "reminder") && p.due_date && text.trim().split(/\s+/).length <= 5) {
       const reminderAt = p.reminder_at || new Date(new Date(p.due_date).getTime() - 30 * 60 * 1000).toISOString();
       await updateMemory(memoryId, {
         due_date: p.due_date,
